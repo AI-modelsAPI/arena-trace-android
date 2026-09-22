@@ -2,7 +2,7 @@ package com.ati.arena.bridge
 
 import android.webkit.JavascriptInterface
 
-/** Bridge called by the injected snoop.js page hook. */
+/** Bridge called by the injected snoop.js page hook. Exposed as window.ArenaTrace. */
 class ArenaBridge(private val onEvent: (String) -> Unit) {
     /** payload: {"sessionId":"…","token":"…"} captured from the Arena SSE stream. */
     @JavascriptInterface

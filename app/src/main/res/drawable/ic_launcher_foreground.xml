@@ -1,0 +1,26 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Left wing: Challenger A (signal blue) -->
+    <path
+        android:fillColor="#3A82F7"
+        android:pathData="M52,24 L26,76 L37,76 L46,58 L52,58 Z" />
+
+    <!-- Right wing: Challenger B (arena emerald) -->
+    <path
+        android:fillColor="#00E599"
+        android:pathData="M56,24 L56,58 L62,58 L71,76 L82,76 Z" />
+
+    <!-- Center trace bridge / scan line -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M43,64 L65,64 L69,72 L39,72 Z" />
+
+    <!-- Upper signal spark (evaluation locus) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,20 L56.5,27 L54,34 L51.5,27 Z" />
+</vector>
