@@ -5,9 +5,24 @@ Chrome 扩展 `arena-trace-inspector` 的原生 Android 移植骨架。用 WebVi
 
 ## 构建
 
-1. 安装 Android Studio（含 Android SDK 34）
+**环境要求**：JDK 17、Gradle 8.7、Android SDK 34（AGP 8.5.2 / Kotlin 2.0.21）。Java 与 Kotlin
+的字节码目标已统一为 17（`app/build.gradle.kts` 的 `compileOptions` 与 `kotlin.compilerOptions`）。
+
+Android Studio：
+1. 安装 Android Studio（含 Android SDK 34，使用 JDK 17）
 2. 打开本目录，等待 Gradle 同步完成
 3. 连接手机（开 USB 调试）或起模拟器，点 Run
+
+命令行（调试包）：
+```bash
+./gradlew testDebugUnitTest assembleDebug   # 若已配置 Gradle Wrapper
+# 或使用本机 gradle：
+gradle testDebugUnitTest assembleDebug
+```
+产物：`app/build/outputs/apk/debug/app-debug.apk`（调试签名）。
+
+> 说明：本仓库暂无单元测试，`testDebugUnitTest` 为 `NO-SOURCE`；编译通过不等于已在真机验证登录与令牌截获。
+> 校验方法与 APK 摘要见 `docs/verification/2026-09-22-jvm17-build.md`。
 
 ## 架构对照（扩展 → 本工程）
 
