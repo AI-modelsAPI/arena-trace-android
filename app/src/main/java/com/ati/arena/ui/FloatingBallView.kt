@@ -42,6 +42,14 @@ class FloatingBallView @JvmOverloads constructor(
     var centerBottom: String = ""
         set(value) { field = value; invalidate() }
 
+    /**
+     * true  → center text is a resolved model name (drawn in dark green);
+     * false → center text is the quota % / placeholder (drawn light for contrast
+     *         against the obsidian core).
+     */
+    var centerIsModel: Boolean = false
+        set(value) { field = value; invalidate() }
+
     private val density = context.resources.displayMetrics.density
     private val ringWidth = 4.5f * density
 
@@ -82,13 +90,16 @@ class FloatingBallView @JvmOverloads constructor(
         strokeWidth = ringWidth
         strokeCap = Paint.Cap.ROUND
     }
+    // Model name is rendered in dark green so it reads as "resolved model" in the
+    // ball center. When no model is known we show the quota % — that's set to a
+    // lighter color at draw time (see [drawCenter]).
     private val topText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
+        color = MODEL_GREEN
         textAlign = Paint.Align.CENTER
         typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
     }
     private val bottomText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#B7C4D6")
+        color = MODEL_GREEN
         textAlign = Paint.Align.CENTER
         typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
     }
@@ -170,6 +181,13 @@ class FloatingBallView @JvmOverloads constructor(
         val bottom = centerBottom
         val maxW = radius * 1.5f
 
+        // Model names read in dark green; the quota %/placeholder reads light so it
+        // stays legible on the near-black core.
+        val topColor = if (centerIsModel) MODEL_GREEN else Color.WHITE
+        val bottomColor = if (centerIsModel) MODEL_GREEN else Color.parseColor("#B7C4D6")
+        topText.color = topColor
+        bottomText.color = bottomColor
+
         fun fit(paint: Paint, text: String, baseSize: Float): Float {
             paint.textSize = baseSize
             val measured = paint.measureText(text)
@@ -206,6 +224,9 @@ class FloatingBallView @JvmOverloads constructor(
     }
 
     companion object {
+        /** Dark green used for resolved model names (ball center + panel label). */
+        val MODEL_GREEN: Int = Color.parseColor("#1B5E20")
+
         /** Solid quota color for the panel progress bar (matches ring health). */
         fun colorFor(percent: Int): Int = when {
             percent < 10 -> Color.parseColor("#E11D2A")
