@@ -121,6 +121,13 @@ class ProbeLogicTest {
         assertTrue(ProbeLogic.isArithmeticTitle(" 12 - 4 = "))
         assertTrue(ProbeLogic.isArithmeticTitle("5*5="))
         assertTrue(ProbeLogic.isArithmeticTitle("8÷2="))
+        // Hardened variants: zero-width chars and fullwidth/unicode operators.
+        assertTrue(ProbeLogic.isArithmeticTitle("1+1=\u200B"))
+        assertTrue(ProbeLogic.isArithmeticTitle("\u200B12 - 4 ="))
+        assertTrue(ProbeLogic.isArithmeticTitle("12＋12="))
+        assertTrue(ProbeLogic.isArithmeticTitle("12－4 ="))
+        assertTrue(ProbeLogic.isArithmeticTitle("6＊7＝"))
+        assertTrue(ProbeLogic.isArithmeticTitle("8−2=")) // U+2212 minus
     }
 
     @Test fun userTitlesAreNotArithmetic() {
@@ -128,6 +135,9 @@ class ProbeLogicTest {
         assertFalse(ProbeLogic.isArithmeticTitle("My chat about math 1+1"))
         assertFalse(ProbeLogic.isArithmeticTitle(""))
         assertFalse(ProbeLogic.isArithmeticTitle("gpt6-001"))
+        // Answered arithmetic ("1+1=2") could be a human-titled chat — left alone.
+        assertFalse(ProbeLogic.isArithmeticTitle("1+1=2"))
+        assertFalse(ProbeLogic.isArithmeticTitle("3*4=12"))
     }
 
     // ---- arithmeticCleanupCandidates ----

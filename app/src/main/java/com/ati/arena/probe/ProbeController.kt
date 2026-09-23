@@ -218,40 +218,54 @@ class ProbeController(
                 rpc("sidebarList", JSONObject().put("expand", true))
                 sidebarOpened = true
                 val done = HashSet<String>()   // sessions we've handled (archived or failed)
+                val archived = HashSet<String>()
+                var consecutiveFailures = 0
                 while (true) {
                     ensureActive()
                     var candidate = nextCandidate(keepSessionId, done)
                     // After an archive the sidebar list may still be repopulating,
-                    // so an empty result isn't conclusive — retry once with a fresh
-                    // sidebar load before deciding the sweep is finished.
+                    // so an empty result isn't conclusive — retry twice with fresh
+                    // sidebar loads before deciding the sweep is finished.
                     if (candidate == null) {
-                        delay(800)
+                        delay(1000)
                         candidate = nextCandidate(keepSessionId, done)
-                        if (candidate == null) break
+                        if (candidate == null) {
+                            delay(1500)
+                            candidate = nextCandidate(keepSessionId, done)
+                            if (candidate == null) break
+                        }
                     }
                     val c = candidate
                     if (ok + failed == 0) onProgress("发现算式标题对话，开始归档")
                     try {
-                        // Archive from the sidebar ⋯ menu directly — do NOT open the
-                        // chat, and do NOT let archive toggle the sidebar (the sweep
-                        // opened it once up front and closes it once at the end).
-                        rpc("archive", JSONObject()
-                            .put("sessionId", c.sessionId)
-                            .put("requireCurrentUrl", false)
-                            .put("manageSidebar", false))
-                        ok++; done.add(c.sessionId); onProgress("已归档 ${c.title}")
+                        archiveCandidate(c)
+                        ok++; done.add(c.sessionId); archived.add(c.sessionId)
+                        consecutiveFailures = 0
+                        onProgress("已归档 ${c.title}")
                         onCleanupState(ok, true)
                     } catch (ce: CancellationException) {
                         throw ce
                     } catch (e: Exception) {
-                        failed++; done.add(c.sessionId)
+                        failed++; done.add(c.sessionId); consecutiveFailures++
                         onProgress("归档 ${c.title} 失败：${e.message}")
-                        if (failed >= 3) { onProgress("连续失败已中止"); break }
+                        if (consecutiveFailures >= 3) { onProgress("连续失败已中止"); break }
                     }
                     delay(600)
                 }
-                if (ok == 0 && failed == 0) onFinished("没有需要归档的算式标题对话")
-                else onFinished("清理完成 · 已归档 $ok" + (if (failed > 0) "，失败 $failed" else "") + "（仅归档，未删除）")
+                // Post-sweep recount (extension parity): re-scan the whole sidebar
+                // and report any arithmetic titles still left behind.
+                delay(800)
+                val remaining = runCatching {
+                    ProbeLogic.arithmeticCleanupCandidates(fetchSidebar(), keepSessionId)
+                        .count { it.sessionId !in archived }
+                }.getOrDefault(-1)
+                val tail = when {
+                    remaining > 0 -> "，仍有 $remaining 个未归档（可再点一次清理）"
+                    failed > 0 -> "，失败 $failed"
+                    else -> ""
+                }
+                if (ok == 0 && failed == 0 && remaining <= 0) onFinished("没有需要归档的算式标题对话")
+                else onFinished("清理完成 · 已归档 $ok$tail（仅归档，未删除）")
             } catch (_: CancellationException) {
                 onFinished("清理已停止（已归档 $ok）")
             } catch (e: Exception) {
@@ -262,6 +276,35 @@ class ProbeController(
                 onCleanupState(ok, false)
             }
         }
+    }
+
+    /**
+     * Archive one candidate from the sidebar ⋯ menu, with extension-parity
+     * hardening: first scroll the virtualized sidebar until the row is MOUNTED
+     * (loadAllSidebar leaves the list at the bottom, so top rows are unmounted
+     * and a blind archive fails), and retry the whole thing once on failure.
+     */
+    private suspend fun archiveCandidate(c: ProbeLogic.SidebarItem) {
+        var lastError: Exception? = null
+        repeat(2) { attempt ->
+            try {
+                rpc("revealSidebarItem", JSONObject().put("sessionId", c.sessionId))
+                // Archive from the sidebar ⋯ menu directly — do NOT open the
+                // chat, and do NOT let archive toggle the sidebar (the sweep
+                // opened it once up front and closes it once at the end).
+                rpc("archive", JSONObject()
+                    .put("sessionId", c.sessionId)
+                    .put("requireCurrentUrl", false)
+                    .put("manageSidebar", false))
+                return
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                lastError = e
+                if (attempt == 0) delay(1200) // one retry, after a beat
+            }
+        }
+        throw lastError ?: IllegalStateException("归档失败")
     }
 
     /** Re-scan the sidebar (without re-toggling it) for the next unhandled arithmetic title. */

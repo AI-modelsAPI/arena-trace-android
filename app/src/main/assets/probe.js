@@ -271,20 +271,57 @@
       try { const u = new URL(a.href, location.origin); if (u.origin === ARENA) id = sessionFromPath(u.pathname); } catch { id = null; }
       if (!id || seen.has(id)) continue;
       seen.add(id);
-      out.push({ sessionId: id, title: text(a).slice(0, 300) });
+      // clean(): strip zero-width chars Arena sometimes injects into titles —
+      // otherwise the Kotlin arithmetic-title regex misses those rows (residue).
+      out.push({ sessionId: id, title: clean(text(a)).slice(0, 300) });
     }
     return out;
   }
   async function loadAllSidebar() {
     const scroller = sidebarScroller();
     if (!scroller) return;
+    // Step DOWN gradually instead of jumping to scrollHeight: virtualized lists
+    // often only fetch/render more rows in response to incremental scrolling.
     let last = -1, stable = 0;
-    for (let i = 0; i < 30 && stable < 2; i++) {
-      scroller.scrollTop = scroller.scrollHeight;
-      await new Promise(r => setTimeout(r, 300));
+    for (let i = 0; i < 40 && stable < 3; i++) {
+      const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 4;
+      scroller.scrollTop = atBottom ? scroller.scrollHeight
+        : scroller.scrollTop + Math.max(200, scroller.clientHeight);
+      await new Promise(r => setTimeout(r, 350));
       const n = collectSidebar().length;
       if (n === last) stable++; else { stable = 0; last = n; }
     }
+  }
+
+  /**
+   * Scroll the (virtualized) sidebar until the row for sessionId is actually
+   * MOUNTED in the DOM. The cleanup sweep must do this before archiving:
+   * loadAllSidebar leaves the list scrolled to the bottom, so top rows are
+   * unmounted and archive()'s link lookup would fail, leaving residue behind.
+   */
+  async function revealSidebarItem(args) {
+    const sessionId = String(args?.sessionId || '');
+    if (!/^[a-zA-Z0-9-]{1,128}$/.test(sessionId)) throw Error('会话 id 无效');
+    if (sidebarLink(sessionId)) return { found: true };
+    const scroller = sidebarScroller();
+    if (!scroller) throw Error('侧栏列表未加载');
+    for (let pass = 0; pass < 2; pass++) {
+      scroller.scrollTop = pass === 0 ? 0 : scroller.scrollHeight;
+      const step = Math.max(200, scroller.clientHeight);
+      for (let i = 0; i < 60; i++) {
+        await new Promise(r => setTimeout(r, 150));
+        const link = sidebarLink(sessionId);
+        if (link) {
+          link.scrollIntoView?.({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+          return { found: true };
+        }
+        const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 4;
+        if (pass === 0) { if (atBottom) break; scroller.scrollTop += step; }
+        else { if (scroller.scrollTop <= 0) break; scroller.scrollTop -= step; }
+      }
+    }
+    if (sidebarLink(sessionId)) return { found: true };
+    throw Error('侧栏未找到该对话');
   }
   async function sidebarList(args) {
     // expand defaults true; cleanup opens the sidebar ONCE up front and passes
@@ -340,7 +377,7 @@
     return r || { archived: true };
   }
 
-  const ACTIONS = { precheck, newChat, ensureAgentMode, send, sendToCurrent, sidebarList, collapseSidebar, openConversation, rename, archive };
+  const ACTIONS = { precheck, newChat, ensureAgentMode, send, sendToCurrent, sidebarList, collapseSidebar, openConversation, revealSidebarItem, rename, archive };
 
   async function call(action, argsJson, reqId) {
     let res;

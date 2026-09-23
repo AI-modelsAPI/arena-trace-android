@@ -105,9 +105,20 @@ object ProbeLogic {
      * A pure-arithmetic conversation title ("1+1=", "12 - 4 ="). Only our own
      * probe sends produce these — a human names chats with words — so a title
      * sweep can archive probe residue without ever touching user-named chats.
+     *
+     * Hardened against title variants seen in the wild: zero-width characters
+     * Arena injects into sidebar titles, and fullwidth/unicode operators
+     * (＋－＊／＝, − U+2212). A title with an ANSWER after "=" ("1+1=2") still
+     * does NOT match — that could be a human-titled chat and is left alone.
      */
-    fun isArithmeticTitle(t: String?): Boolean =
-        Regex("""^\s*\d{1,4}\s*[+\-*/×÷]\s*\d{1,4}\s*=\s*$""").matches(t ?: "")
+    fun isArithmeticTitle(t: String?): Boolean {
+        val s = (t ?: "")
+            .replace(Regex("[\\u200B\\u200C\\u200D\\uFEFF]"), "")
+            .replace('＋', '+').replace('－', '-').replace('−', '-')
+            .replace('＊', '*').replace('／', '/')
+            .replace('＝', '=')
+        return Regex("""^\s*\d{1,4}\s*[+\-*/×÷]\s*\d{1,4}\s*=\s*$""").matches(s)
+    }
 
     fun isOwnPrompt(t: String?): Boolean = PROMPTS.contains(t)
 

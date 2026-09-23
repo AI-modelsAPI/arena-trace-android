@@ -5,7 +5,11 @@ Chrome 扩展 `arena-trace-inspector` 的原生 Android 移植骨架。用 WebVi
 
 ## 构建
 
-**环境要求**：JDK 17、Gradle 8.7、Android SDK 34（AGP 8.5.2 / Kotlin 2.0.21）。Java 与 Kotlin
+**远端构建（推荐，无需本机 Android SDK）**：推送到 `main` 或在 Actions 页手动触发
+`Android Build` 工作流，即由 GitHub Actions 跑 JVM 单元测试并构建调试 APK；产物在
+该次运行的 **Artifacts → `arena-trace-debug-apk`** 下载（无需登录态校验，调试签名可直接安装）。
+
+**本机构建环境要求**：JDK 17、Gradle 8.7、Android SDK 34（AGP 8.5.2 / Kotlin 2.0.21）。Java 与 Kotlin
 的字节码目标已统一为 17（`app/build.gradle.kts` 的 `compileOptions` 与 `kotlin.compilerOptions`）。
 
 Android Studio：
