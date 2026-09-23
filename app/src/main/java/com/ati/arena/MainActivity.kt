@@ -114,6 +114,7 @@ class MainActivity : AppCompatActivity() {
             onProgress = { line -> appendProbeLog(line) },
             onFinished = { summary -> appendProbeLog(summary); setProbeRunningUi(false) },
             onCleanupState = { archived, active -> showCleanupOnBall(archived, active) },
+            onProbeState = { round, maxRounds, hits, active -> showProbeOnBall(round, maxRounds, hits, active) },
         )
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView, url: String) {
@@ -193,6 +194,9 @@ class MainActivity : AppCompatActivity() {
             if (cfg.targets.isEmpty()) { appendProbeLog("请填写至少一个目标"); return@setOnClickListener }
             findViewById<TextView>(R.id.probe_log).text = ""
             setProbeRunningUi(true)
+            // Collapse to the ball so the probe's own new-chat / send actions aren't
+            // blocked by our panel; the ball center shows a live briefing.
+            collapseToBall()
             probe.start(cfg)
         }
         findViewById<Button>(R.id.probe_stop).setOnClickListener {
@@ -575,6 +579,28 @@ class MainActivity : AppCompatActivity() {
             ball.centerTop = "已归档"
             ball.centerBottom = "$archived"
             // Hold the final count ~3s, then hand the center back to renderPulse.
+            ball.postDelayed({
+                ballBusy = false
+                renderPulse()
+            }, 3000)
+        }
+    }
+
+    /**
+     * Show a live probe briefing in the ball center. While active: "探针" on top
+     * and "round/max · 命中N" below. When it ends: "探针" / "命中N" held ~3s, then
+     * the center is released back to the quota/model display.
+     */
+    private fun showProbeOnBall(round: Int, maxRounds: Int, hits: Int, active: Boolean) {
+        if (active) {
+            ballBusy = true
+            ball.centerIsModel = false
+            ball.centerTop = if (round <= 0) "探针" else "R$round/$maxRounds"
+            ball.centerBottom = "命中$hits"
+        } else {
+            ball.centerIsModel = false
+            ball.centerTop = "探针完"
+            ball.centerBottom = "命中$hits"
             ball.postDelayed({
                 ballBusy = false
                 renderPulse()

@@ -37,6 +37,11 @@ class ProbeController(
      * (archivedCount, active). active=true while sweeping, false when it ends.
      */
     private val onCleanupState: (archived: Int, active: Boolean) -> Unit = { _, _ -> },
+    /**
+     * Probe lifecycle for the floating-ball briefing:
+     * (round, maxRounds, hits, active). active=true while probing, false at the end.
+     */
+    private val onProbeState: (round: Int, maxRounds: Int, hits: Int, active: Boolean) -> Unit = { _, _, _, _ -> },
 ) {
     data class Config(
         val targets: List<String>,
@@ -95,10 +100,12 @@ class ProbeController(
         job = scope.launch(Dispatchers.Main) {
             val hits = mutableListOf<ProbeLogic.Hit>()
             val allTargets = cfg.targets
+            onProbeState(0, cfg.maxRounds, 0, true)
             try {
                 onProgress("开始探针 · 目标 ${allTargets.joinToString("、")} · ${if (cfg.findAll) "命中全部才停" else "命中即停"} · 最多 ${cfg.maxRounds} 轮")
                 for (round in 1..cfg.maxRounds) {
                     ensureActive()
+                    onProbeState(round, cfg.maxRounds, hits.size, true)
 
                     // For findAll we surface which targets are still outstanding, but we
                     // ALWAYS match against the full target list — a hit target is never
@@ -130,6 +137,7 @@ class ProbeController(
                         hits.add(h)
                         onProgress("命中目标 ${h.target} → ${h.model}")
                     }
+                    onProbeState(round, cfg.maxRounds, hits.size, true)
                     // Rename the round's session at most once (one session, one title).
                     if (roundHits.isNotEmpty() && cfg.autoRename) {
                         renameHit(sessionId, models.firstOrNull() ?: roundHits.first().model)
@@ -149,6 +157,8 @@ class ProbeController(
                 onFinished("探针已停止（命中 ${hits.size} 个）")
             } catch (e: Exception) {
                 onFinished("探针中断：${e.message}")
+            } finally {
+                onProbeState(0, cfg.maxRounds, hits.size, false)
             }
         }
     }
