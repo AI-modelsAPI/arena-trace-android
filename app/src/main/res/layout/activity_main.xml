@@ -9,35 +9,64 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!-- Expanded panel: hidden until the floating ball is tapped. -->
     <com.google.android.material.card.MaterialCardView
-        android:id="@+id/hud"
+        android:id="@+id/panel"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="top|end"
         android:layout_margin="12dp"
-        app:cardCornerRadius="14dp"
-        app:cardElevation="6dp">
+        android:visibility="invisible"
+        app:cardCornerRadius="16dp"
+        app:cardElevation="8dp">
+
+        <ScrollView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:maxHeight="520dp"
+            android:scrollbars="none">
 
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:minWidth="230dp"
+            android:minWidth="260dp"
             android:orientation="vertical"
-            android:padding="14dp">
+            android:padding="16dp">
 
-            <TextView
-                android:id="@+id/hud_model"
-                android:layout_width="wrap_content"
+            <!-- Header row: model name + collapse (X) icon at the top-right. -->
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="模型待确认"
-                android:textSize="16sp"
-                android:textStyle="bold" />
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/hud_model"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="模型待确认"
+                    android:textColor="#1B5E20"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
+                <ImageButton
+                    android:id="@+id/panel_collapse"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_marginStart="8dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="收起"
+                    android:padding="6dp"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/ic_collapse" />
+            </LinearLayout>
 
             <TextView
                 android:id="@+id/hud_pulse"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
+                android:layout_marginTop="10dp"
                 android:text="额度读取中…"
                 android:textSize="13sp" />
 
@@ -54,9 +83,185 @@
                 android:id="@+id/hud_status"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
+                android:layout_marginTop="10dp"
                 android:text="等待会话流…"
                 android:textSize="11sp" />
+
+            <!-- Browser controls: back / forward / refresh. -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/nav_back"
+                    style="?attr/materialButtonOutlinedStyle"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:minWidth="0dp"
+                    android:paddingHorizontal="0dp"
+                    android:text="‹ 后退"
+                    android:textSize="13sp" />
+
+                <Button
+                    android:id="@+id/nav_forward"
+                    style="?attr/materialButtonOutlinedStyle"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:layout_weight="1"
+                    android:minWidth="0dp"
+                    android:paddingHorizontal="0dp"
+                    android:text="前进 ›"
+                    android:textSize="13sp" />
+
+                <Button
+                    android:id="@+id/nav_reload"
+                    style="?attr/materialButtonOutlinedStyle"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:layout_weight="1"
+                    android:minWidth="0dp"
+                    android:paddingHorizontal="0dp"
+                    android:text="刷新"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <!-- ── Auto-probe section ─────────────────────────────── -->
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginTop="16dp"
+                android:background="#22000000" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="自动探针"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="会发送真实消息、消耗额度。逗号分隔目标，支持 /正则/。"
+                android:textColor="#88000000"
+                android:textSize="10sp" />
+
+            <EditText
+                android:id="@+id/probe_targets"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="opus5, fable5, gpt6"
+                android:importantForAutofill="no"
+                android:inputType="text"
+                android:text="opus5, fable5, gpt6"
+                android:textSize="13sp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="最多轮数"
+                    android:textSize="12sp" />
+
+                <EditText
+                    android:id="@+id/probe_rounds"
+                    android:layout_width="64dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:importantForAutofill="no"
+                    android:inputType="number"
+                    android:text="5"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <CheckBox
+                android:id="@+id/probe_find_all"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:checked="true"
+                android:text="命中所有目标才停止"
+                android:textSize="12sp" />
+
+            <CheckBox
+                android:id="@+id/probe_rename"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                android:text="命中后自动重命名会话"
+                android:textSize="12sp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/probe_start"
+                    style="?attr/materialButtonOutlinedStyle"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:minWidth="0dp"
+                    android:paddingHorizontal="0dp"
+                    android:text="开始探针"
+                    android:textSize="13sp" />
+
+                <Button
+                    android:id="@+id/probe_stop"
+                    style="?attr/materialButtonOutlinedStyle"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:layout_weight="1"
+                    android:enabled="false"
+                    android:minWidth="0dp"
+                    android:paddingHorizontal="0dp"
+                    android:text="停止"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/probe_cleanup"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="清理算式标题（仅归档）"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/probe_log"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text=""
+                android:textColor="#66000000"
+                android:textSize="10sp" />
         </LinearLayout>
+        </ScrollView>
     </com.google.android.material.card.MaterialCardView>
+
+    <!-- Floating ball: draggable, tap to toggle the panel. 76dp = 64dp core + shadow/glow band. -->
+    <com.ati.arena.ui.FloatingBallView
+        android:id="@+id/ball"
+        android:layout_width="76dp"
+        android:layout_height="76dp"
+        android:layout_gravity="top|end"
+        android:layout_margin="8dp" />
 </FrameLayout>

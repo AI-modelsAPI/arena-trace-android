@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- MaterialCardView (used in activity_main.xml) requires a MaterialComponents
+         descendant theme; an AppCompat theme makes it throw at inflation time. -->
+    <style name="Theme.ArenaTrace" parent="Theme.MaterialComponents.DayNight.NoActionBar" />
+</resources>
