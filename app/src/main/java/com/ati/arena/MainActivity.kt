@@ -44,6 +44,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var panel: View
     private lateinit var ball: FloatingBallView
+    private lateinit var dock: View
+    private lateinit var scrim: View
     private lateinit var hudModel: TextView
     private lateinit var hudPulse: TextView
     private lateinit var hudPulseBar: ProgressBar
@@ -75,6 +77,10 @@ class MainActivity : AppCompatActivity() {
     private var turnSessionId = ""
     private var turnCount = 0
     private var lastTurnModel = ""
+    private var firstTurnModel = ""    // the conversation's first resolved model
+    // true when the current turn's model differs from the conversation's first —
+    // the ball center draws the name orange-yellow to flag the routing change.
+    private var currentRouted = false
     private val turnHistory = ArrayDeque<String>()  // recent "R{n} model", newest last
 
     // sessionId -> resolved model name(s), populated by the snoop→trace pipeline.
@@ -97,6 +103,8 @@ class MainActivity : AppCompatActivity() {
         webView = findViewById(R.id.web)
         panel = findViewById(R.id.panel)
         ball = findViewById(R.id.ball)
+        dock = findViewById(R.id.ball_dock)
+        scrim = findViewById(R.id.panel_scrim)
         hudModel = findViewById(R.id.hud_model)
         hudPulse = findViewById(R.id.hud_pulse)
         hudPulseBar = findViewById(R.id.hud_pulse_bar)
@@ -145,14 +153,20 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupControls() {
-        ball.setOnClickListener { togglePanel() }
-        // Long-press the ball → send the panel's quick-send text to the current chat.
-        ball.setOnLongClickListener { triggerQuickSend(); true }
-        // Ball and panel are mutually exclusive and share ONE logical position.
-        // Each is independently draggable; a real drag updates the shared anchor
-        // so the other view reappears exactly where this one was left.
-        makeDraggable(ball) { captureAnchor(ball) }
+        // Single tap → toggle the radial dock (probe / cleanup / refresh).
+        // Double tap → expand the full panel.
+        val detector = android.view.GestureDetector(this, object : android.view.GestureDetector.SimpleOnGestureListener() {
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean { toggleDock(); return true }
+            override fun onDoubleTap(e: MotionEvent): Boolean { expandToPanel(); return true }
+            override fun onLongPress(e: MotionEvent) { triggerQuickSend() }
+        })
+        // makeDraggable consumes drags; taps fall through to the gesture detector.
+        makeDraggable(ball, onTap = { detector.onTouchEvent(it) }) { captureAnchor(ball); syncDockPosition() }
         makeDraggable(panel) { captureAnchor(panel) }
+
+        // Tap anywhere outside the panel → collapse it.
+        scrim.setOnClickListener { collapseToBall() }
+
         findViewById<ImageButton>(R.id.panel_collapse).setOnClickListener { collapseToBall() }
         findViewById<Button>(R.id.nav_back).setOnClickListener {
             if (webView.canGoBack()) webView.goBack()
@@ -161,6 +175,12 @@ class MainActivity : AppCompatActivity() {
             if (webView.canGoForward()) webView.goForward()
         }
         findViewById<Button>(R.id.nav_reload).setOnClickListener { webView.reload() }
+
+        // Radial dock buttons.
+        findViewById<ImageButton>(R.id.dock_probe).setOnClickListener { hideDock(); startProbeFromDock() }
+        findViewById<ImageButton>(R.id.dock_cleanup).setOnClickListener { hideDock(); startCleanupFromDock() }
+        findViewById<ImageButton>(R.id.dock_refresh).setOnClickListener { hideDock(); webView.reload() }
+
         setupProbeControls()
     }
 
@@ -194,19 +214,7 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<Button>(R.id.probe_start).setOnClickListener {
             persistPanel()
-            val cfg = ProbeController.Config(
-                targets = ProbeLogic.parseTargets(targets.text.toString()),
-                maxRounds = rounds.text.toString().toIntOrNull()?.coerceIn(1, 100) ?: 5,
-                findAll = findAll.isChecked,
-                autoRename = rename.isChecked,
-            )
-            if (cfg.targets.isEmpty()) { appendProbeLog("请填写至少一个目标"); return@setOnClickListener }
-            findViewById<TextView>(R.id.probe_log).text = ""
-            setProbeRunningUi(true)
-            // Collapse to the ball so the probe's own new-chat / send actions aren't
-            // blocked by our panel; the ball center shows a live briefing.
-            collapseToBall()
-            probe.start(cfg)
+            startProbeFromPanel()
         }
         findViewById<Button>(R.id.probe_stop).setOnClickListener {
             probe.stop(); setProbeRunningUi(false)
@@ -221,6 +229,39 @@ class MainActivity : AppCompatActivity() {
         // Quick send: fills the current conversation's composer and sends. The
         // panel button and the ball long-press share this one path.
         findViewById<Button>(R.id.quick_send).setOnClickListener { persistPanel(); triggerQuickSend() }
+    }
+
+    /** Build a probe Config from the current panel values. */
+    private fun probeConfigFromPanel(): ProbeController.Config = ProbeController.Config(
+        targets = ProbeLogic.parseTargets(findViewById<EditText>(R.id.probe_targets).text.toString()),
+        maxRounds = findViewById<EditText>(R.id.probe_rounds).text.toString().toIntOrNull()?.coerceIn(1, 100) ?: 5,
+        findAll = findViewById<CheckBox>(R.id.probe_find_all).isChecked,
+        autoRename = findViewById<CheckBox>(R.id.probe_rename).isChecked,
+    )
+
+    private fun startProbeFromPanel() {
+        val cfg = probeConfigFromPanel()
+        if (cfg.targets.isEmpty()) { appendProbeLog("请填写至少一个目标"); return }
+        findViewById<TextView>(R.id.probe_log).text = ""
+        setProbeRunningUi(true)
+        // Collapse to the ball so the probe's own new-chat / send actions aren't
+        // blocked by our panel; the ball center shows a live briefing.
+        collapseToBall()
+        probe.start(cfg)
+    }
+
+    /** Dock (single-tap radial) → start the probe with the saved/panel config. */
+    private fun startProbeFromDock() {
+        if (probe.isRunning) { probe.stop(); setProbeRunningUi(false); return }
+        val cfg = probeConfigFromPanel()
+        if (cfg.targets.isEmpty()) { flashBall("探针", "无目标"); return }
+        setProbeRunningUi(true)
+        probe.start(cfg)
+    }
+
+    /** Dock (single-tap radial) → run the arithmetic-title cleanup sweep. */
+    private fun startCleanupFromDock() {
+        probe.cleanup(keepSessionId = lastSessionId.ifEmpty { null })
     }
 
     /** Read the quick-send text from the panel and dispatch it to the current chat. */
@@ -264,27 +305,93 @@ class MainActivity : AppCompatActivity() {
     private var anchorCX = Float.NaN
     private var anchorCY = Float.NaN
 
-    private fun togglePanel() {
-        if (panel.visibility == View.VISIBLE) collapseToBall() else expandToPanel()
-    }
-
     /**
-     * Expand: the panel takes the ball's spot; the ball hides (never shown together).
-     * We do NOT re-capture the anchor here — the anchor is only ever updated by an
-     * actual drag. Re-capturing from the (possibly clamped) panel is exactly what
-     * made the ball drift to the panel's middle after collapse.
+     * Expand the full panel (double-tap). The panel takes the ball's spot; the ball
+     * and dock hide. A transparent full-screen scrim goes behind the panel so a tap
+     * anywhere outside collapses it. Animated in with a quick scale+fade.
      */
     private fun expandToPanel() {
+        hideDock()
         placeAtAnchor(panel)
+        scrim.visibility = View.VISIBLE
         panel.visibility = View.VISIBLE
         ball.visibility = View.INVISIBLE
+        panel.alpha = 0f
+        panel.scaleX = 0.85f
+        panel.scaleY = 0.85f
+        panel.pivotX = panel.width.toFloat()
+        panel.pivotY = 0f
+        panel.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(180L).start()
     }
 
-    /** Collapse: the ball reappears at the exact shared anchor; the panel hides. */
+    /** Collapse: the ball reappears at the exact shared anchor; the panel + scrim hide. */
     private fun collapseToBall() {
+        scrim.visibility = View.GONE
         placeAtAnchor(ball)
         ball.visibility = View.VISIBLE
         panel.visibility = View.INVISIBLE
+    }
+
+    // ── Radial dock (single tap) ──────────────────────────────────────────────
+    private var dockShown = false
+
+    private fun toggleDock() {
+        if (dockShown) hideDock() else showDock()
+    }
+
+    /**
+     * Show the dock to the LEFT of the ball, visually connected to it, animating
+     * out from the ball's edge (translationX + fade + slight scale).
+     */
+    private fun showDock() {
+        if (panel.visibility == View.VISIBLE) return
+        syncDockPosition()
+        dock.visibility = View.VISIBLE
+        dockShown = true
+        scrim.visibility = View.VISIBLE // tap outside closes the dock too
+        dock.alpha = 0f
+        dock.translationX = 24f * resources.displayMetrics.density
+        dock.scaleX = 0.8f
+        dock.pivotX = dock.width.toFloat()
+        dock.pivotY = dock.height / 2f
+        dock.animate().alpha(1f).translationX(0f).scaleX(1f).setDuration(200L).start()
+        // Stagger the three buttons in for a lively pop.
+        val ids = intArrayOf(R.id.dock_refresh, R.id.dock_cleanup, R.id.dock_probe)
+        ids.forEachIndexed { i, id ->
+            val b = findViewById<View>(id)
+            b.alpha = 0f; b.scaleX = 0.4f; b.scaleY = 0.4f
+            b.animate().alpha(1f).scaleX(1f).scaleY(1f).setStartDelay(60L + i * 55L).setDuration(220L).start()
+        }
+    }
+
+    private fun hideDock() {
+        if (!dockShown) return
+        dockShown = false
+        if (panel.visibility != View.VISIBLE) scrim.visibility = View.GONE
+        dock.animate().alpha(0f).translationX(20f * resources.displayMetrics.density)
+            .setDuration(150L).withEndAction { dock.visibility = View.GONE }.start()
+    }
+
+    /** Position the dock immediately to the left of the ball, vertically centered on it. */
+    private fun syncDockPosition() {
+        val parent = ball.parent as? View ?: return
+        if (dock.width == 0) {
+            dock.measure(
+                View.MeasureSpec.makeMeasureSpec(parent.width, View.MeasureSpec.AT_MOST),
+                View.MeasureSpec.makeMeasureSpec(parent.height, View.MeasureSpec.AT_MOST),
+            )
+        }
+        val dockW = if (dock.width > 0) dock.width else dock.measuredWidth
+        val dockH = if (dock.height > 0) dock.height else dock.measuredHeight
+        val overlap = 18f * resources.displayMetrics.density // tuck under the ball so they connect
+        val ballCx = ball.x + ball.width / 2f
+        val ballCy = ball.y + ball.height / 2f
+        var x = ball.x - dockW + overlap
+        var y = ballCy - dockH / 2f
+        x = x.coerceIn(0f, (parent.width - dockW).toFloat().coerceAtLeast(0f))
+        y = y.coerceIn(0f, (parent.height - dockH).toFloat().coerceAtLeast(0f))
+        dock.x = x
+        dock.y = y
     }
 
     /** Record the shared center from whichever view the user last saw/dragged. */
@@ -305,19 +412,21 @@ class MainActivity : AppCompatActivity() {
         target.y = (anchorCY - target.height / 2f).coerceIn(0f, maxY)
     }
 
-    /** Physical back button navigates the WebView history before leaving the app. */
+    /** Physical back button: close panel/dock first, else navigate WebView history. */
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
         if (panel.visibility == View.VISIBLE) { collapseToBall(); return }
+        if (dockShown) { hideDock(); return }
         if (webView.canGoBack()) webView.goBack() else super.onBackPressed()
     }
 
     /**
-     * Drag to reposition [v]; a tap (movement under slop) still fires OnClick.
-     * [onMoved] runs after each drag step (used to sync the shared anchor).
+     * Drag to reposition [v]; a tap (movement under slop) is forwarded to [onTap]
+     * (so the gesture detector sees single/double/long presses). [onMoved] runs
+     * after each drag step (used to sync the shared anchor + dock position).
      */
     @SuppressLint("ClickableViewAccessibility")
-    private fun makeDraggable(v: View, onMoved: () -> Unit = {}) {
+    private fun makeDraggable(v: View, onTap: (MotionEvent) -> Unit = {}, onMoved: () -> Unit = {}) {
         var downRawX = 0f
         var downRawY = 0f
         var startX = 0f
@@ -325,6 +434,8 @@ class MainActivity : AppCompatActivity() {
         var dragging = false
         val touchSlop = resources.displayMetrics.density * 8
         v.setOnTouchListener { view, e ->
+            // Always let the gesture detector observe events (for tap/double/long).
+            onTap(e)
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downRawX = e.rawX; downRawY = e.rawY
@@ -345,10 +456,7 @@ class MainActivity : AppCompatActivity() {
                     dragging
                 }
                 MotionEvent.ACTION_UP -> {
-                    // A real drag consumes the event (suppresses the click). A tap
-                    // returns false so the View generates exactly ONE click itself —
-                    // calling performClick() here as well double-fired the toggle
-                    // (panel opened then instantly closed).
+                    // A real drag consumes the event so it doesn't also fire a tap.
                     dragging && (abs(e.rawX - downRawX) > touchSlop || abs(e.rawY - downRawY) > touchSlop)
                 }
                 else -> false
@@ -413,11 +521,14 @@ class MainActivity : AppCompatActivity() {
         turnSessionId = ""
         turnCount = 0
         lastTurnModel = ""
+        firstTurnModel = ""
+        currentRouted = false
         turnHistory.clear()
         if (ballBusy) return
         hudModel.text = "模型待确认"
         hudStatus.text = "等待会话流…"
         ball.centerIsModel = false
+        ball.centerRouted = false
         renderPulse() // repaint the ball center as quota % / placeholder
     }
 
@@ -528,14 +639,22 @@ class MainActivity : AppCompatActivity() {
     /**
      * Record which model answered [turn] and refresh the status line so the user
      * can see per-turn model routing (Arena sometimes routes different turns of
-     * one conversation to different models).
+     * one conversation to different models). Also flags the ball center orange-
+     * yellow when a turn's model differs from the conversation's FIRST model.
      */
     private fun recordTurn(turn: Int, model: String) {
-        val routed = lastTurnModel.isNotEmpty() && model != lastTurnModel
+        if (firstTurnModel.isEmpty()) firstTurnModel = model
+        // Routed = this turn's model differs from the conversation's first model.
+        currentRouted = model != firstTurnModel
+        val changedFromPrev = lastTurnModel.isNotEmpty() && model != lastTurnModel
         lastTurnModel = model
         turnHistory.addLast("R$turn $model")
         while (turnHistory.size > 6) turnHistory.removeFirst()
-        val head = if (routed) "第 $turn 轮 · 已切换模型 → $model" else "第 $turn 轮 · $model"
+        val head = when {
+            currentRouted && changedFromPrev -> "第 $turn 轮 · 已切换模型 → $model"
+            currentRouted -> "第 $turn 轮 · $model（非首轮模型）"
+            else -> "第 $turn 轮 · $model"
+        }
         hudStatus.text = head + "\n本会话: " + turnHistory.joinToString(" · ")
     }
 
@@ -665,8 +784,10 @@ class MainActivity : AppCompatActivity() {
         // navigation/trace-triggered model update overwrite it.
         if (ballBusy) return
         val id = model.trim()
-        if (id.isEmpty()) { ball.centerIsModel = false; ball.centerTop = "…"; ball.centerBottom = ""; return }
+        if (id.isEmpty()) { ball.centerIsModel = false; ball.centerRouted = false; ball.centerTop = "…"; ball.centerBottom = ""; return }
         ball.centerIsModel = true
+        // Orange-yellow when this turn's model differs from the conversation's first.
+        ball.centerRouted = currentRouted
         val parts = id.split('-', ' ', '_', '/').filter { it.isNotBlank() }
         val versionStart = parts.indexOfFirst { it.first().isDigit() }
         if (versionStart <= 0) {

@@ -1,0 +1,16 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Probe: a radar / target reticle. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M12,2 A10,10 0 1 0 12,22 A10,10 0 1 0 12,2 Z M12,4 A8,8 0 1 1 12,20 A8,8 0 1 1 12,4 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M12,7 A5,5 0 1 0 12,17 A5,5 0 1 0 12,7 Z M12,9 A3,3 0 1 1 12,15 A3,3 0 1 1 12,9 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M11,11 h2 v2 h-2 z" />
+</vector>

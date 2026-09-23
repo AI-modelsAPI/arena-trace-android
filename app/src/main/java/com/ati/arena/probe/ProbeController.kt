@@ -204,14 +204,19 @@ class ProbeController(
         job = scope.launch(Dispatchers.Main) {
             var ok = 0
             var failed = 0
+            var sidebarOpened = false
             onCleanupState(0, true)
             try {
                 onProgress("扫描侧栏算式标题…")
+                // Open the sidebar ONCE up front; subsequent scans pass expand=false
+                // so we don't toggle it open/closed for every conversation.
+                rpc("sidebarList", JSONObject().put("expand", true))
+                sidebarOpened = true
                 val done = HashSet<String>()   // sessions we've handled (archived or failed)
                 while (true) {
                     ensureActive()
                     var candidate = nextCandidate(keepSessionId, done)
-                    // After an archive the sidebar Sheet may still be repopulating,
+                    // After an archive the sidebar list may still be repopulating,
                     // so an empty result isn't conclusive — retry once with a fresh
                     // sidebar load before deciding the sweep is finished.
                     if (candidate == null) {
@@ -243,12 +248,14 @@ class ProbeController(
             } catch (e: Exception) {
                 onFinished("清理中断：${e.message}")
             } finally {
+                // Close the sidebar we opened, once, when the sweep ends.
+                if (sidebarOpened) runCatching { rpc("collapseSidebar") }
                 onCleanupState(ok, false)
             }
         }
     }
 
-    /** Re-scan the sidebar and return the first arithmetic-title chat not yet handled. */
+    /** Re-scan the sidebar (without re-toggling it) for the next unhandled arithmetic title. */
     private suspend fun nextCandidate(
         keepSessionId: String?,
         done: Set<String>,
@@ -258,7 +265,8 @@ class ProbeController(
             .firstOrNull { it.sessionId !in done }
     }
 
-    private suspend fun fetchSidebar(): List<ProbeLogic.SidebarItem> {        val listData = rpc("sidebarList")
+    private suspend fun fetchSidebar(): List<ProbeLogic.SidebarItem> {
+        val listData = rpc("sidebarList", JSONObject().put("expand", false))
         val items = listData.optJSONArray("items")
         return buildList {
             if (items != null) for (i in 0 until items.length()) {

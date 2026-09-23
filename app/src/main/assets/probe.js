@@ -84,6 +84,13 @@
       || buttons.find(b => ['Toggle Sidebar', 'Toggle sidebar', '切换侧栏'].includes(b.getAttribute('aria-label')) && b.closest?.('[data-state="collapsed"]'));
     opener?.click();
   }
+  function collapseSidebar() {
+    const buttons = [...document.querySelectorAll('button[aria-label]')].filter(b => visible(b) && !b.disabled);
+    const closer = buttons.find(b => ['Close sidebar', '收起侧栏', '关闭侧边栏', '收起侧边栏'].includes(b.getAttribute('aria-label')))
+      || buttons.find(b => ['Toggle Sidebar', 'Toggle sidebar', '切换侧栏'].includes(b.getAttribute('aria-label')));
+    closer?.click();
+    return { closed: true };
+  }
   function newChatControl() {
     const agentLink = a => { try { const u = new URL(a.href, location.origin); return u.origin === ARENA && u.pathname.replace(/\/$/, '') === '/agent'; } catch { return false; } };
     const links = [...document.querySelectorAll('a[href]')].filter(agentLink);
@@ -277,8 +284,10 @@
       if (n === last) stable++; else { stable = 0; last = n; }
     }
   }
-  async function sidebarList() {
-    expandSidebar();
+  async function sidebarList(args) {
+    // expand defaults true; cleanup opens the sidebar ONCE up front and passes
+    // expand:false on subsequent scans so we don't toggle it every pass.
+    if (args?.expand !== false) expandSidebar();
     if (!collectSidebar().length) await waitFor(() => collectSidebar().length > 0, '侧栏对话列表未加载', 6000).catch(() => {});
     await loadAllSidebar();
     return { items: collectSidebar() };
@@ -327,7 +336,7 @@
     return r || { archived: true };
   }
 
-  const ACTIONS = { precheck, newChat, ensureAgentMode, send, sendToCurrent, sidebarList, openConversation, rename, archive };
+  const ACTIONS = { precheck, newChat, ensureAgentMode, send, sendToCurrent, sidebarList, collapseSidebar, openConversation, rename, archive };
 
   async function call(action, argsJson, reqId) {
     let res;

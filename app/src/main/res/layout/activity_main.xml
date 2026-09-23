@@ -9,7 +9,65 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- Expanded panel: hidden until the floating ball is tapped. -->
+    <!-- Scrim: tap anywhere outside the panel to collapse it. Only visible while
+         the panel is open; transparent so it doesn't dim the page. -->
+    <View
+        android:id="@+id/panel_scrim"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
+    <!-- Radial dock: single-tap the ball pops these out to its left, connected to
+         the ball by a pill bridge. Hidden until shown. -->
+    <LinearLayout
+        android:id="@+id/ball_dock"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:background="@drawable/dock_bar_bg"
+        android:elevation="10dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="12dp"
+        android:paddingEnd="20dp"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp"
+        android:visibility="gone">
+
+        <ImageButton
+            android:id="@+id/dock_probe"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_marginEnd="8dp"
+            android:background="@drawable/dock_button_bg"
+            android:contentDescription="探针"
+            android:padding="10dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_probe" />
+
+        <ImageButton
+            android:id="@+id/dock_cleanup"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_marginEnd="8dp"
+            android:background="@drawable/dock_button_bg"
+            android:contentDescription="清理"
+            android:padding="10dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_cleanup" />
+
+        <ImageButton
+            android:id="@+id/dock_refresh"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="@drawable/dock_button_bg"
+            android:contentDescription="刷新"
+            android:padding="10dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_refresh" />
+    </LinearLayout>
+
+    <!-- Expanded panel: hidden until the floating ball is double-tapped. -->
     <com.google.android.material.card.MaterialCardView
         android:id="@+id/panel"
         android:layout_width="wrap_content"

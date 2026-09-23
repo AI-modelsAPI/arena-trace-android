@@ -43,11 +43,18 @@ class FloatingBallView @JvmOverloads constructor(
         set(value) { field = value; invalidate() }
 
     /**
-     * true  → center text is a resolved model name (drawn in dark green);
-     * false → center text is the quota % / placeholder (drawn light for contrast
-     *         against the obsidian core).
+     * true  → center text is a resolved model name (drawn WHITE bold, or
+     *         ORANGE-YELLOW when [centerRouted] — a mid-conversation model change);
+     * false → center text is the quota % / placeholder (drawn light).
      */
     var centerIsModel: Boolean = false
+        set(value) { field = value; invalidate() }
+
+    /**
+     * When true (and [centerIsModel]), the model differs from the conversation's
+     * first model → draw the name in orange-yellow to flag the routing change.
+     */
+    var centerRouted: Boolean = false
         set(value) { field = value; invalidate() }
 
     private val density = context.resources.displayMetrics.density
@@ -181,10 +188,12 @@ class FloatingBallView @JvmOverloads constructor(
         val bottom = centerBottom
         val maxW = radius * 1.5f
 
-        // Model names read in WHITE bold; the quota %/placeholder reads light so it
-        // stays legible on the near-black core.
-        val topColor = Color.WHITE
-        val bottomColor = if (centerIsModel) Color.WHITE else Color.parseColor("#B7C4D6")
+        // Model names read WHITE bold; when routed to a different model than the
+        // conversation's first, they read ORANGE-YELLOW. Quota %/placeholder is a
+        // lighter shade. Kept legible on the near-black core.
+        val modelColor = if (centerRouted) ROUTED_YELLOW else Color.WHITE
+        val topColor = if (centerIsModel) modelColor else Color.WHITE
+        val bottomColor = if (centerIsModel) modelColor else Color.parseColor("#B7C4D6")
         topText.color = topColor
         bottomText.color = bottomColor
         // Bold both lines when showing a model name; keep the version line normal
@@ -232,6 +241,9 @@ class FloatingBallView @JvmOverloads constructor(
     companion object {
         /** Dark green used for resolved model names (ball center + panel label). */
         val MODEL_GREEN: Int = Color.parseColor("#1B5E20")
+
+        /** Orange-yellow: model routed differently than the conversation's first. */
+        val ROUTED_YELLOW: Int = Color.parseColor("#FFB300")
 
         /** Solid quota color for the panel progress bar (matches ring health). */
         fun colorFor(percent: Int): Int = when {
