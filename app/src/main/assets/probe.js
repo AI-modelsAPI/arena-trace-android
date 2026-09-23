@@ -296,9 +296,15 @@
     const sessionId = String(args?.sessionId || '');
     if (!/^[a-zA-Z0-9-]{1,128}$/.test(sessionId)) throw Error('会话 id 无效');
     if (session() === sessionId) return { session: sessionId };
-    expandSidebar();
-    let link = sidebarLink(sessionId);
-    if (!link) { await loadAllSidebar(); link = sidebarLink(sessionId); }
+    // On a phone the sidebar Sheet auto-closes after a selection, so between
+    // archives the target link may not be in the DOM. Reopen and wait for it,
+    // retrying a few times (scroll the virtualized list) before giving up.
+    let link = null;
+    for (let attempt = 0; attempt < 3 && !link; attempt++) {
+      expandSidebar();
+      link = await waitFor(() => sidebarLink(sessionId), '', 2500).catch(() => null);
+      if (!link) { await loadAllSidebar(); link = sidebarLink(sessionId); }
+    }
     if (!link) throw Error('侧栏未找到该对话');
     link.click();
     await waitFor(() => session() === sessionId, '切换到该对话超时', 8000);

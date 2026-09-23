@@ -359,8 +359,9 @@ class MainActivity : AppCompatActivity() {
             return
         }
         injectSnoop(view)
-        // A full page load of a saved conversation → echo its remembered model.
-        HistoryLogic.sessionFromPath(path)?.let { restoreModelForSession(it) }
+        // A full page load of a saved conversation → echo its remembered model;
+        // a new-chat composer (/agent, no id) → reset the display to 待确认.
+        applyNavigation(path)
     }
 
     /**
@@ -371,7 +372,35 @@ class MainActivity : AppCompatActivity() {
     private fun onArenaUrlChanged(url: String) {
         if (!url.startsWith("https://arena.ai/")) return
         val path = runCatching { java.net.URI(url).path ?: "" }.getOrDefault("")
-        HistoryLogic.sessionFromPath(path)?.let { restoreModelForSession(it) }
+        applyNavigation(path)
+    }
+
+    /**
+     * Route a navigation to the right model-display update:
+     *  - /agent/{id}  → restore that conversation's remembered/live model
+     *  - /agent       → a fresh composer, so the model is unknown → reset to 待确认
+     *    (without this, the ball/panel kept showing the PREVIOUS chat's model).
+     *  - anything else → leave the current display alone.
+     */
+    private fun applyNavigation(path: String) {
+        val sessionId = HistoryLogic.sessionFromPath(path)
+        when {
+            sessionId != null -> restoreModelForSession(sessionId)
+            path.trimEnd('/') == "/agent" -> clearModelDisplay()
+        }
+    }
+
+    /** Reset the model display to "待确认" for a brand-new conversation. */
+    private fun clearModelDisplay() {
+        if (lastRestoredSession == NEW_CHAT_MARKER) return // already reset for this new chat
+        lastRestoredSession = NEW_CHAT_MARKER
+        lastSessionId = ""
+        currentModel = ""
+        if (ballBusy) return
+        hudModel.text = "模型待确认"
+        hudStatus.text = "等待会话流…"
+        ball.centerIsModel = false
+        renderPulse() // repaint the ball center as quota % / placeholder
     }
 
     /**
@@ -596,6 +625,9 @@ class MainActivity : AppCompatActivity() {
     private companion object {
         const val ARENA_HOME = "https://arena.ai/"
         const val ARENA_AGENT = "https://arena.ai/agent"
+        // Sentinel for lastRestoredSession meaning "the new-chat composer": lets us
+        // reset the display to 待确认 exactly once per fresh chat.
+        const val NEW_CHAT_MARKER = "\u0000new-chat"
         const val WARMUP_POLL_MS = 400L
         const val WARMUP_MAX_MS = 15_000L
         // Returns "true" when the page still looks like a Cloudflare interstitial.

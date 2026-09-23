@@ -199,10 +199,16 @@ class ProbeController(
                 val done = HashSet<String>()   // sessions we've handled (archived or failed)
                 while (true) {
                     ensureActive()
-                    val sidebar = fetchSidebar()
-                    val candidates = ProbeLogic.arithmeticCleanupCandidates(sidebar, keepSessionId)
-                        .filter { it.sessionId !in done }
-                    val c = candidates.firstOrNull() ?: break
+                    var candidate = nextCandidate(keepSessionId, done)
+                    // After an archive the sidebar Sheet may still be repopulating,
+                    // so an empty result isn't conclusive — retry once with a fresh
+                    // sidebar load before deciding the sweep is finished.
+                    if (candidate == null) {
+                        delay(800)
+                        candidate = nextCandidate(keepSessionId, done)
+                        if (candidate == null) break
+                    }
+                    val c = candidate
                     if (ok + failed == 0) onProgress("发现算式标题对话，开始归档")
                     try {
                         // Navigate to the chat first; archive's guard needs its page.
@@ -217,7 +223,7 @@ class ProbeController(
                         onProgress("归档 ${c.title} 失败：${e.message}")
                         if (failed >= 3) { onProgress("连续失败已中止"); break }
                     }
-                    delay(500)
+                    delay(600)
                 }
                 if (ok == 0 && failed == 0) onFinished("没有需要归档的算式标题对话")
                 else onFinished("清理完成 · 已归档 $ok" + (if (failed > 0) "，失败 $failed" else "") + "（仅归档，未删除）")
@@ -231,8 +237,17 @@ class ProbeController(
         }
     }
 
-    private suspend fun fetchSidebar(): List<ProbeLogic.SidebarItem> {
-        val listData = rpc("sidebarList")
+    /** Re-scan the sidebar and return the first arithmetic-title chat not yet handled. */
+    private suspend fun nextCandidate(
+        keepSessionId: String?,
+        done: Set<String>,
+    ): ProbeLogic.SidebarItem? {
+        val sidebar = fetchSidebar()
+        return ProbeLogic.arithmeticCleanupCandidates(sidebar, keepSessionId)
+            .firstOrNull { it.sessionId !in done }
+    }
+
+    private suspend fun fetchSidebar(): List<ProbeLogic.SidebarItem> {        val listData = rpc("sidebarList")
         val items = listData.optJSONArray("items")
         return buildList {
             if (items != null) for (i in 0 until items.length()) {

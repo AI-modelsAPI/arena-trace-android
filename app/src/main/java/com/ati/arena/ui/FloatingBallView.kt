@@ -90,16 +90,16 @@ class FloatingBallView @JvmOverloads constructor(
         strokeWidth = ringWidth
         strokeCap = Paint.Cap.ROUND
     }
-    // Model name is rendered in dark green so it reads as "resolved model" in the
-    // ball center. When no model is known we show the quota % — that's set to a
-    // lighter color at draw time (see [drawCenter]).
+    // Center text: model name is drawn WHITE bold; the quota %/placeholder is a
+    // lighter shade. The actual color/weight is (re)applied at draw time in
+    // [drawCenter]; these are just sane initial values.
     private val topText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = MODEL_GREEN
+        color = Color.WHITE
         textAlign = Paint.Align.CENTER
         typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
     }
     private val bottomText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = MODEL_GREEN
+        color = Color.WHITE
         textAlign = Paint.Align.CENTER
         typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
     }
@@ -181,12 +181,18 @@ class FloatingBallView @JvmOverloads constructor(
         val bottom = centerBottom
         val maxW = radius * 1.5f
 
-        // Model names read in dark green; the quota %/placeholder reads light so it
+        // Model names read in WHITE bold; the quota %/placeholder reads light so it
         // stays legible on the near-black core.
-        val topColor = if (centerIsModel) MODEL_GREEN else Color.WHITE
-        val bottomColor = if (centerIsModel) MODEL_GREEN else Color.parseColor("#B7C4D6")
+        val topColor = Color.WHITE
+        val bottomColor = if (centerIsModel) Color.WHITE else Color.parseColor("#B7C4D6")
         topText.color = topColor
         bottomText.color = bottomColor
+        // Bold both lines when showing a model name; keep the version line normal
+        // weight for the quota/placeholder state.
+        bottomText.typeface = Typeface.create(
+            Typeface.SANS_SERIF,
+            if (centerIsModel) Typeface.BOLD else Typeface.NORMAL,
+        )
 
         fun fit(paint: Paint, text: String, baseSize: Float): Float {
             paint.textSize = baseSize
