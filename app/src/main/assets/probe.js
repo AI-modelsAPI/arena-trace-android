@@ -188,8 +188,10 @@
     if (isGenerating()) throw Error('当前回复仍在生成，已停止');
     // Already on a fresh /agent composer with no session → nothing to do.
     if (!session() && agentPath() && composer()) { noDraft(true); return { session: null }; }
-    expandSidebar();
-    const control = await waitFor(() => newChatControl(), '未找到 New Chat 入口，已停止');
+    // Prefer the New Chat control without opening the sidebar; only expand if it
+    // isn't reachable, so probe rounds don't keep toggling the sidebar.
+    let control = newChatControl();
+    if (!control) { expandSidebar(); control = await waitFor(() => newChatControl(), '未找到 New Chat 入口，已停止'); }
     control.click();
     await waitFor(() => !session() && agentPath(), '新建聊天超时');
     await waitFor(() => composer(), '等待新聊天输入框超时');
@@ -330,9 +332,11 @@
     const api = globalThis.ArenaConversationRename;
     if (!api) throw Error('归档模块未加载');
     // Cleanup archives from the sidebar ⋯ menu without opening the chat, so it
-    // must not require being on the chat's own URL.
+    // must not require being on the chat's own URL, and must not toggle the
+    // sidebar (the sweep opens/closes it exactly once around the whole loop).
     const requireCurrentUrl = args?.requireCurrentUrl !== false;
-    const r = await api.archive({ sessionId: String(args?.sessionId || ''), isCurrent: () => true, requireCurrentUrl });
+    const manageSidebar = args?.manageSidebar !== false;
+    const r = await api.archive({ sessionId: String(args?.sessionId || ''), isCurrent: () => true, requireCurrentUrl, manageSidebar });
     return r || { archived: true };
   }
 

@@ -23,16 +23,18 @@
   // so exclude sidebar sheets when checking for a "please close the dialog" modal.
   const isSidebarSheet=d=>!!(d.querySelector?.('[data-sidebar]')||d.closest?.('[data-sidebar]'));
   const blockingDialogOpen=()=>[...document.querySelectorAll('[role="dialog"],[role="alertdialog"]')].some(d=>visible(d)&&!isSidebarSheet(d));
-  async function revealCurrentLink(links,guard,wait){
+  // manageSidebar: when false (cleanup sweep), never expand/collapse the sidebar
+  // ourselves — the caller opens it once up front and closes it once at the end.
+  async function revealCurrentLink(links,guard,wait,manageSidebar=true){
     guard();
     const find=()=>links().find(a=>sidebarExpanded(a));
-    if(!find()){
+    if(!find()&&manageSidebar){
       const buttons=[...document.querySelectorAll('button[aria-label]')].filter(b=>visible(b)&&!b.disabled);
       const opener=buttons.find(b=>['Open sidebar','展开侧栏','打开侧边栏','展开侧边栏'].includes(b.getAttribute('aria-label')))
         ||buttons.find(b=>['Toggle Sidebar','Toggle sidebar','切换侧栏'].includes(b.getAttribute('aria-label'))&&b.closest?.('[data-state="collapsed"]'));
       if(opener){guard();opener.click();}
     }
-    const a=await wait(()=>{guard();return find();},'自动展开侧栏后仍未找到当前聊天；本地记录保留');
+    const a=await wait(()=>{guard();return find();},'侧栏未找到当前聊天；本地记录保留');
     a.scrollIntoView?.({block:'nearest',inline:'nearest',behavior:'instant'});
     return a;
   }
@@ -94,20 +96,22 @@
       busy=false;
     }
   }
-  async function archive({sessionId,isCurrent=()=>true,requireCurrentUrl=true}) {
+  async function archive({sessionId,isCurrent=()=>true,requireCurrentUrl=true,manageSidebar=true}) {
     validate(sessionId,'archive');
     if(busy)throw Error('正在操作聊天，请稍后再试');
     // requireCurrentUrl=false: archive straight from the sidebar row's ⋯ menu
     // without navigating into the chat (opening the chat loads its content and
     // times out during a bulk sweep). We still bind to the exact sessionId via
     // its sidebar link, so we never archive the wrong conversation.
+    // manageSidebar=false: the cleanup sweep opens the sidebar once up front and
+    // closes it once at the end, so this call must NOT toggle the sidebar itself.
     const guard=()=>{if(location.origin!=='https://arena.ai'||(requireCurrentUrl&&sessionFromPath(location.pathname)!==sessionId)||!isCurrent())throw Error('当前聊天已变化，已停止归档');};
     const links=()=>[...document.querySelectorAll('a[data-sidebar="menu-button"][href]')].filter(a=>{try{const u=new URL(a.href);return u.origin==='https://arena.ai'&&sessionFromPath(u.pathname)===sessionId;}catch{return false;}});
     const wait=(check,message)=>new Promise((resolve,reject)=>{let timer,interval;const finish=(error,value)=>{clearTimeout(timer);clearInterval(interval);error?reject(error):resolve(value);};const tick=()=>{try{const value=check();if(value)finish(null,value);}catch(e){finish(e);}};timer=setTimeout(()=>finish(Error(message)),10000);interval=setInterval(tick,100);tick();});
     guard();busy=true;let menu=null,dialog=null,submitted=false;
     try {
       if(blockingDialogOpen())throw Error('请先关闭页面对话框');
-      const a=await revealCurrentLink(links,guard,wait);
+      const a=await revealCurrentLink(links,guard,wait,manageSidebar);
       const sidebar=a.closest('[data-sidebar="sidebar"]')||a.closest('[data-sidebar="content"]');
       if(!sidebar)throw Error('无法确认聊天侧栏，未作修改');
       const trigger=a.closest('[data-sidebar="menu-item"]')?.querySelector('button[data-sidebar="menu-action"][aria-haspopup="menu"]');

@@ -153,19 +153,30 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupControls() {
-        // Single tap → toggle the radial dock (probe / cleanup / refresh).
-        // Double tap → expand the full panel.
+        // The ball must be clickable/long-clickable so it reliably receives the
+        // full touch stream (DOWN→MOVE→UP); otherwise taps leak to the WebView and
+        // the GestureDetector never sees a complete tap.
+        ball.isClickable = true
+        ball.isLongClickable = true
+        // Single tap → radial dock (probe / cleanup / refresh).
+        // Double tap → full panel. Long press → quick send.
         val detector = android.view.GestureDetector(this, object : android.view.GestureDetector.SimpleOnGestureListener() {
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean { toggleDock(); return true }
             override fun onDoubleTap(e: MotionEvent): Boolean { expandToPanel(); return true }
             override fun onLongPress(e: MotionEvent) { triggerQuickSend() }
         })
-        // makeDraggable consumes drags; taps fall through to the gesture detector.
-        makeDraggable(ball, onTap = { detector.onTouchEvent(it) }) { captureAnchor(ball); syncDockPosition() }
-        makeDraggable(panel) { captureAnchor(panel) }
+        // Ball: consume DOWN so we keep the event stream; taps go to the detector.
+        makeDraggable(ball, consumeDown = true, onTap = { detector.onTouchEvent(it) }) {
+            captureAnchor(ball); syncDockPosition()
+        }
+        // Panel: do NOT consume DOWN (its buttons/inputs need the events).
+        makeDraggable(panel, consumeDown = false) { captureAnchor(panel) }
 
-        // Tap anywhere outside the panel → collapse it.
-        scrim.setOnClickListener { collapseToBall() }
+        // Tap anywhere outside the panel/dock → collapse whichever is open.
+        scrim.setOnClickListener {
+            if (panel.visibility == View.VISIBLE) collapseToBall()
+            if (dockShown) hideDock()
+        }
 
         findViewById<ImageButton>(R.id.panel_collapse).setOnClickListener { collapseToBall() }
         findViewById<Button>(R.id.nav_back).setOnClickListener {
@@ -426,7 +437,12 @@ class MainActivity : AppCompatActivity() {
      * after each drag step (used to sync the shared anchor + dock position).
      */
     @SuppressLint("ClickableViewAccessibility")
-    private fun makeDraggable(v: View, onTap: (MotionEvent) -> Unit = {}, onMoved: () -> Unit = {}) {
+    private fun makeDraggable(
+        v: View,
+        consumeDown: Boolean = false,
+        onTap: (MotionEvent) -> Unit = {},
+        onMoved: () -> Unit = {},
+    ) {
         var downRawX = 0f
         var downRawY = 0f
         var startX = 0f
@@ -441,7 +457,10 @@ class MainActivity : AppCompatActivity() {
                     downRawX = e.rawX; downRawY = e.rawY
                     startX = view.x; startY = view.y
                     dragging = false
-                    false
+                    // Consuming DOWN keeps the whole gesture on this view so the
+                    // detector reliably sees UP (single/double tap). Required for
+                    // the ball; the panel returns false so its children work.
+                    consumeDown
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = e.rawX - downRawX
@@ -453,7 +472,7 @@ class MainActivity : AppCompatActivity() {
                         view.y = (startY + dy).coerceIn(0f, (parent.height - view.height).toFloat())
                         onMoved()
                     }
-                    dragging
+                    dragging || consumeDown
                 }
                 MotionEvent.ACTION_UP -> {
                     // A real drag consumes the event so it doesn't also fire a tap.

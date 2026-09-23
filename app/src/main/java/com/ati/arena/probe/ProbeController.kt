@@ -100,6 +100,7 @@ class ProbeController(
         job = scope.launch(Dispatchers.Main) {
             val hits = mutableListOf<ProbeLogic.Hit>()
             val allTargets = cfg.targets
+            var renamedAny = false
             onProbeState(0, cfg.maxRounds, 0, true)
             try {
                 onProgress("开始探针 · 目标 ${allTargets.joinToString("、")} · ${if (cfg.findAll) "命中全部才停" else "命中即停"} · 最多 ${cfg.maxRounds} 轮")
@@ -141,6 +142,7 @@ class ProbeController(
                     // Rename the round's session at most once (one session, one title).
                     if (roundHits.isNotEmpty() && cfg.autoRename) {
                         renameHit(sessionId, models.firstOrNull() ?: roundHits.first().model)
+                        renamedAny = true
                     }
 
                     if (cfg.findAll) {
@@ -158,6 +160,9 @@ class ProbeController(
             } catch (e: Exception) {
                 onFinished("探针中断：${e.message}")
             } finally {
+                // Auto-rename opens the sidebar to reach a chat's ⋯ menu; close it
+                // once here so the probe doesn't leave the sidebar open at the end.
+                if (renamedAny) runCatching { rpc("collapseSidebar") }
                 onProbeState(0, cfg.maxRounds, hits.size, false)
             }
         }
@@ -228,8 +233,12 @@ class ProbeController(
                     if (ok + failed == 0) onProgress("发现算式标题对话，开始归档")
                     try {
                         // Archive from the sidebar ⋯ menu directly — do NOT open the
-                        // chat (loading its content is slow and times out).
-                        rpc("archive", JSONObject().put("sessionId", c.sessionId).put("requireCurrentUrl", false))
+                        // chat, and do NOT let archive toggle the sidebar (the sweep
+                        // opened it once up front and closes it once at the end).
+                        rpc("archive", JSONObject()
+                            .put("sessionId", c.sessionId)
+                            .put("requireCurrentUrl", false)
+                            .put("manageSidebar", false))
                         ok++; done.add(c.sessionId); onProgress("已归档 ${c.title}")
                         onCleanupState(ok, true)
                     } catch (ce: CancellationException) {
