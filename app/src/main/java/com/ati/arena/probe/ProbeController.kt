@@ -192,11 +192,12 @@ class ProbeController(
      * Sidebar title sweep: archive chats whose title is bare arithmetic (our
      * probe residue). Never deletes; never touches user-named chats.
      *
-     * archive() requires being ON the target chat's own page (its guard checks
-     * location.pathname === /agent/{sessionId}), so we navigate to each candidate
-     * via a real sidebar click (openConversation) before archiving. The candidate
-     * list is recomputed each pass because titles/sidebar entries shift as chats
-     * get archived. keepSessionId (the currently-open chat) is never archived.
+     * We archive straight from each row's ⋯ menu WITHOUT opening the chat —
+     * opening a conversation loads its full content and easily times out during a
+     * bulk sweep. archive(requireCurrentUrl=false) still binds to the exact
+     * sessionId via its sidebar link, so the correct chat is archived. The
+     * candidate list is recomputed each pass because sidebar entries shift as
+     * chats get archived. keepSessionId (the currently-open chat) is never touched.
      */
     fun cleanup(keepSessionId: String?) {
         if (isRunning) { onProgress("探针运行中，请先停止再清理"); return }
@@ -221,9 +222,9 @@ class ProbeController(
                     val c = candidate
                     if (ok + failed == 0) onProgress("发现算式标题对话，开始归档")
                     try {
-                        // Navigate to the chat first; archive's guard needs its page.
-                        rpc("openConversation", JSONObject().put("sessionId", c.sessionId))
-                        rpc("archive", JSONObject().put("sessionId", c.sessionId))
+                        // Archive from the sidebar ⋯ menu directly — do NOT open the
+                        // chat (loading its content is slow and times out).
+                        rpc("archive", JSONObject().put("sessionId", c.sessionId).put("requireCurrentUrl", false))
                         ok++; done.add(c.sessionId); onProgress("已归档 ${c.title}")
                         onCleanupState(ok, true)
                     } catch (ce: CancellationException) {

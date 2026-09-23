@@ -320,7 +320,10 @@
   async function archive(args) {
     const api = globalThis.ArenaConversationRename;
     if (!api) throw Error('归档模块未加载');
-    const r = await api.archive({ sessionId: String(args?.sessionId || ''), isCurrent: () => true });
+    // Cleanup archives from the sidebar ⋯ menu without opening the chat, so it
+    // must not require being on the chat's own URL.
+    const requireCurrentUrl = args?.requireCurrentUrl !== false;
+    const r = await api.archive({ sessionId: String(args?.sessionId || ''), isCurrent: () => true, requireCurrentUrl });
     return r || { archived: true };
   }
 

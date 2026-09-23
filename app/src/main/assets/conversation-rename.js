@@ -94,10 +94,14 @@
       busy=false;
     }
   }
-  async function archive({sessionId,isCurrent=()=>true}) {
+  async function archive({sessionId,isCurrent=()=>true,requireCurrentUrl=true}) {
     validate(sessionId,'archive');
     if(busy)throw Error('正在操作聊天，请稍后再试');
-    const guard=()=>{if(location.origin!=='https://arena.ai'||sessionFromPath(location.pathname)!==sessionId||!isCurrent())throw Error('当前聊天已变化，已停止归档');};
+    // requireCurrentUrl=false: archive straight from the sidebar row's ⋯ menu
+    // without navigating into the chat (opening the chat loads its content and
+    // times out during a bulk sweep). We still bind to the exact sessionId via
+    // its sidebar link, so we never archive the wrong conversation.
+    const guard=()=>{if(location.origin!=='https://arena.ai'||(requireCurrentUrl&&sessionFromPath(location.pathname)!==sessionId)||!isCurrent())throw Error('当前聊天已变化，已停止归档');};
     const links=()=>[...document.querySelectorAll('a[data-sidebar="menu-button"][href]')].filter(a=>{try{const u=new URL(a.href);return u.origin==='https://arena.ai'&&sessionFromPath(u.pathname)===sessionId;}catch{return false;}});
     const wait=(check,message)=>new Promise((resolve,reject)=>{let timer,interval;const finish=(error,value)=>{clearTimeout(timer);clearInterval(interval);error?reject(error):resolve(value);};const tick=()=>{try{const value=check();if(value)finish(null,value);}catch(e){finish(e);}};timer=setTimeout(()=>finish(Error(message)),10000);interval=setInterval(tick,100);tick();});
     guard();busy=true;let menu=null,dialog=null,submitted=false;
