@@ -68,6 +68,15 @@ class MainActivity : AppCompatActivity() {
     // requests that otherwise pile up and risk 429s.
     private var lastToken = ""
 
+    // Per-turn tracking for the CURRENT conversation. Arena issues a fresh run
+    // token per turn, and a turn may be routed to a different model — so each new
+    // token is a new turn. We surface which model answered each turn so the user
+    // can see mid-conversation model routing.
+    private var turnSessionId = ""
+    private var turnCount = 0
+    private var lastTurnModel = ""
+    private val turnHistory = ArrayDeque<String>()  // recent "R{n} model", newest last
+
     // sessionId -> resolved model name(s), populated by the snoop→trace pipeline.
     // The auto-probe reads this to associate a probe round with its model.
     private val sessionModels = ConcurrentHashMap<String, String>()
@@ -400,6 +409,11 @@ class MainActivity : AppCompatActivity() {
         lastRestoredSession = NEW_CHAT_MARKER
         lastSessionId = ""
         currentModel = ""
+        // New conversation → drop per-turn history so counting restarts at 1.
+        turnSessionId = ""
+        turnCount = 0
+        lastTurnModel = ""
+        turnHistory.clear()
         if (ballBusy) return
         hudModel.text = "模型待确认"
         hudStatus.text = "等待会话流…"
@@ -476,7 +490,19 @@ class MainActivity : AppCompatActivity() {
         if (token == lastToken) return
         lastToken = token
         if (sessionId.isNotEmpty()) lastSessionId = sessionId
-        runOnUiThread { hudStatus.text = "已截获运行令牌，正在拉取 trace…" }
+
+        // A fresh token = a new turn. Reset the per-turn counter when the session
+        // changes; otherwise this is the next turn of the SAME conversation.
+        if (sessionId != turnSessionId) {
+            turnSessionId = sessionId
+            turnCount = 0
+            lastTurnModel = ""
+            turnHistory.clear()
+        }
+        turnCount += 1
+        val thisTurn = turnCount
+
+        runOnUiThread { hudStatus.text = "第 $thisTurn 轮 · 已截获令牌，正在识别模型…" }
         traceJob?.cancel()
         traceJob = lifecycleScope.launch(Dispatchers.IO) {
             val result = traceClient.fetchModels(token, sessionId)
@@ -489,14 +515,28 @@ class MainActivity : AppCompatActivity() {
                         // Never tokens, trace, cookies, or conversation text.
                         store.saveModels(sessionId, result.models)
                     }
+                    recordTurn(thisTurn, currentModel)
                     hudModel.text = currentModel
-                    hudStatus.text = "已识别模型 · run " + result.runId
                     applyBallModel(result.models.firstOrNull() ?: currentModel)
                 } else {
-                    hudStatus.text = result.error
+                    hudStatus.text = "第 $thisTurn 轮 · ${result.error}"
                 }
             }
         }
+    }
+
+    /**
+     * Record which model answered [turn] and refresh the status line so the user
+     * can see per-turn model routing (Arena sometimes routes different turns of
+     * one conversation to different models).
+     */
+    private fun recordTurn(turn: Int, model: String) {
+        val routed = lastTurnModel.isNotEmpty() && model != lastTurnModel
+        lastTurnModel = model
+        turnHistory.addLast("R$turn $model")
+        while (turnHistory.size > 6) turnHistory.removeFirst()
+        val head = if (routed) "第 $turn 轮 · 已切换模型 → $model" else "第 $turn 轮 · $model"
+        hudStatus.text = head + "\n本会话: " + turnHistory.joinToString(" · ")
     }
 
     /**

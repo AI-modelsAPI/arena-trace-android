@@ -81,9 +81,10 @@
 
             <TextView
                 android:id="@+id/hud_status"
-                android:layout_width="wrap_content"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="10dp"
+                android:maxLines="4"
                 android:text="等待会话流…"
                 android:textSize="11sp" />
 
