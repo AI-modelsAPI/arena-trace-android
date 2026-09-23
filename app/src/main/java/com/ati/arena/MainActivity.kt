@@ -58,6 +58,9 @@ class MainActivity : AppCompatActivity() {
     // Anchored quota-reset instant (ms). Held stable across refetches so the
     // countdown doesn't restart every minute; see PulseTiming.
     private var resetAtAnchor = 0L
+    // While true, renderPulse must NOT overwrite the ball center — a transient
+    // status (cleanup progress) is being shown there instead.
+    private var ballBusy = false
     private var lastCookieSig = ""
     private var currentModel = ""
     // Dedup guard: the SSE tap can surface the same run token repeatedly. Pulling
@@ -110,6 +113,7 @@ class MainActivity : AppCompatActivity() {
             modelForSession = { sid -> sessionModels[sid] },
             onProgress = { line -> appendProbeLog(line) },
             onFinished = { summary -> appendProbeLog(summary); setProbeRunningUi(false) },
+            onCleanupState = { archived, active -> showCleanupOnBall(archived, active) },
         )
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView, url: String) {
@@ -196,6 +200,9 @@ class MainActivity : AppCompatActivity() {
         }
         findViewById<Button>(R.id.probe_cleanup).setOnClickListener {
             findViewById<TextView>(R.id.probe_log).text = ""
+            // Collapse to the ball so the sweep's archive dialogs aren't blocked by
+            // our own panel, and show the running count in the ball center.
+            collapseToBall()
             probe.cleanup(keepSessionId = lastSessionId.ifEmpty { null })
         }
         // Quick send: fills the current conversation's composer and sends. The
@@ -208,7 +215,21 @@ class MainActivity : AppCompatActivity() {
         val text = findViewById<EditText>(R.id.quick_text).text.toString()
         if (text.isBlank()) { appendProbeLog("请先填写要发送的内容"); return }
         appendProbeLog("正在发送到当前对话…")
-        probe.quickSend(text) { result -> appendProbeLog(result) }
+        probe.quickSend(text) { result ->
+            appendProbeLog(result)
+            // The long-press fires with the panel collapsed, so echo the outcome
+            // briefly in the ball center too.
+            flashBall(if (result.startsWith("已发送")) "已发送" else "发送", if (result.startsWith("已发送")) "✓" else "×")
+        }
+    }
+
+    /** Briefly show a two-line status in the ball center, then release it. */
+    private fun flashBall(top: String, bottom: String) {
+        ballBusy = true
+        ball.centerIsModel = false
+        ball.centerTop = top
+        ball.centerBottom = bottom
+        ball.postDelayed({ ballBusy = false; renderPulse() }, 2500)
     }
 
     private fun setProbeRunningUi(running: Boolean) {
@@ -486,11 +507,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderPulse() {
         val p = pulse
+        // A transient status (cleanup progress) owns the ball center; still update
+        // the ring % and panel text, but leave the center label alone.
         if (p == null) {
             hudPulse.text = if (pulseError.isNotEmpty()) "额度：$pulseError" else "额度读取中…"
             hudPulseBar.progress = 0
             ball.percent = -1
-            if (currentModel.isEmpty()) { ball.centerIsModel = false; ball.centerTop = "…"; ball.centerBottom = "" }
+            if (!ballBusy && currentModel.isEmpty()) { ball.centerIsModel = false; ball.centerTop = "…"; ball.centerBottom = "" }
             return
         }
         val countdown = if (resetAtAnchor > 0) {
@@ -503,8 +526,31 @@ class MainActivity : AppCompatActivity() {
         hudPulseBar.progressTintList = ColorStateList.valueOf(color)
         ball.percent = p.percent
         // No model yet → show quota % centered; otherwise the model name/version
-        // (set once in applyBallModel) stays in the ring.
-        if (currentModel.isEmpty()) { ball.centerIsModel = false; ball.centerTop = "${p.percent}%"; ball.centerBottom = "" }
+        // (set once in applyBallModel) stays in the ring. Never while ballBusy.
+        if (!ballBusy && currentModel.isEmpty()) { ball.centerIsModel = false; ball.centerTop = "${p.percent}%"; ball.centerBottom = "" }
+    }
+
+    /**
+     * Show cleanup (archive-sweep) progress in the ball center. While active the
+     * center reads "清理" / "N" (count archived); when it ends we briefly show the
+     * final count, then release the center back to the quota/model display.
+     */
+    private fun showCleanupOnBall(archived: Int, active: Boolean) {
+        if (active) {
+            ballBusy = true
+            ball.centerIsModel = false
+            ball.centerTop = "清理"
+            ball.centerBottom = if (archived > 0) "$archived" else "…"
+        } else {
+            ball.centerIsModel = false
+            ball.centerTop = "已归档"
+            ball.centerBottom = "$archived"
+            // Hold the final count ~3s, then hand the center back to renderPulse.
+            ball.postDelayed({
+                ballBusy = false
+                renderPulse()
+            }, 3000)
+        }
     }
 
     private fun formatCountdown(ms: Long): String {
@@ -520,6 +566,9 @@ class MainActivity : AppCompatActivity() {
      * The first numeric token starts the version; everything before it is the name.
      */
     private fun applyBallModel(model: String) {
+        // While a transient status owns the ball center (cleanup sweep), don't let a
+        // navigation/trace-triggered model update overwrite it.
+        if (ballBusy) return
         val id = model.trim()
         if (id.isEmpty()) { ball.centerIsModel = false; ball.centerTop = "…"; ball.centerBottom = ""; return }
         ball.centerIsModel = true

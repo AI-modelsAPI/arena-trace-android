@@ -32,6 +32,11 @@ class ProbeController(
     private val modelForSession: (sessionId: String) -> String?,
     private val onProgress: (String) -> Unit,
     private val onFinished: (summary: String) -> Unit,
+    /**
+     * Cleanup lifecycle for the floating-ball status display:
+     * (archivedCount, active). active=true while sweeping, false when it ends.
+     */
+    private val onCleanupState: (archived: Int, active: Boolean) -> Unit = { _, _ -> },
 ) {
     data class Config(
         val targets: List<String>,
@@ -186,18 +191,17 @@ class ProbeController(
     fun cleanup(keepSessionId: String?) {
         if (isRunning) { onProgress("探针运行中，请先停止再清理"); return }
         job = scope.launch(Dispatchers.Main) {
+            var ok = 0
+            var failed = 0
+            onCleanupState(0, true)
             try {
                 onProgress("扫描侧栏算式标题…")
-                var ok = 0
-                var failed = 0
                 val done = HashSet<String>()   // sessions we've handled (archived or failed)
-                var totalSeen = 0
                 while (true) {
                     ensureActive()
                     val sidebar = fetchSidebar()
                     val candidates = ProbeLogic.arithmeticCleanupCandidates(sidebar, keepSessionId)
                         .filter { it.sessionId !in done }
-                    if (totalSeen == 0) totalSeen = candidates.size
                     val c = candidates.firstOrNull() ?: break
                     if (ok + failed == 0) onProgress("发现算式标题对话，开始归档")
                     try {
@@ -205,6 +209,7 @@ class ProbeController(
                         rpc("openConversation", JSONObject().put("sessionId", c.sessionId))
                         rpc("archive", JSONObject().put("sessionId", c.sessionId))
                         ok++; done.add(c.sessionId); onProgress("已归档 ${c.title}")
+                        onCleanupState(ok, true)
                     } catch (ce: CancellationException) {
                         throw ce
                     } catch (e: Exception) {
@@ -217,9 +222,11 @@ class ProbeController(
                 if (ok == 0 && failed == 0) onFinished("没有需要归档的算式标题对话")
                 else onFinished("清理完成 · 已归档 $ok" + (if (failed > 0) "，失败 $failed" else "") + "（仅归档，未删除）")
             } catch (_: CancellationException) {
-                onFinished("清理已停止")
+                onFinished("清理已停止（已归档 $ok）")
             } catch (e: Exception) {
                 onFinished("清理中断：${e.message}")
+            } finally {
+                onCleanupState(ok, false)
             }
         }
     }

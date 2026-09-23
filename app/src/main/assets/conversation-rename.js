@@ -18,6 +18,11 @@
     return true;
   };
   const sidebarExpanded=e=>visible(e)&&!e.closest?.('[data-state="collapsed"][data-collapsible]');
+  // On a phone the sidebar is a Radix Sheet with role="dialog". That is NOT a
+  // blocking modal for our purposes — cleanup must open it to reach chat links —
+  // so exclude sidebar sheets when checking for a "please close the dialog" modal.
+  const isSidebarSheet=d=>!!(d.querySelector?.('[data-sidebar]')||d.closest?.('[data-sidebar]'));
+  const blockingDialogOpen=()=>[...document.querySelectorAll('[role="dialog"],[role="alertdialog"]')].some(d=>visible(d)&&!isSidebarSheet(d));
   async function revealCurrentLink(links,guard,wait){
     guard();
     const find=()=>links().find(a=>sidebarExpanded(a));
@@ -47,7 +52,7 @@
     });
     guard();busy=true;let dialog=null,menu=null,submitted=false,oldTitle='';
     try{
-      if([...document.querySelectorAll('[role="dialog"],[role="alertdialog"]')].some(visible))throw Error('请先关闭页面上已打开的对话框，再重试');
+      if(blockingDialogOpen())throw Error('请先关闭页面上已打开的对话框，再重试');
       // On a narrow (phone) layout the sidebar is collapsed by default, so the
       // chat link isn't in the DOM/visible yet. Expand it first (archive already
       // does this via revealCurrentLink) so rename works on small screens too.
@@ -97,7 +102,7 @@
     const wait=(check,message)=>new Promise((resolve,reject)=>{let timer,interval;const finish=(error,value)=>{clearTimeout(timer);clearInterval(interval);error?reject(error):resolve(value);};const tick=()=>{try{const value=check();if(value)finish(null,value);}catch(e){finish(e);}};timer=setTimeout(()=>finish(Error(message)),10000);interval=setInterval(tick,100);tick();});
     guard();busy=true;let menu=null,dialog=null,submitted=false;
     try {
-      if([...document.querySelectorAll('[role="dialog"],[role="alertdialog"]')].some(visible))throw Error('请先关闭页面对话框');
+      if(blockingDialogOpen())throw Error('请先关闭页面对话框');
       const a=await revealCurrentLink(links,guard,wait);
       const sidebar=a.closest('[data-sidebar="sidebar"]')||a.closest('[data-sidebar="content"]');
       if(!sidebar)throw Error('无法确认聊天侧栏，未作修改');
@@ -112,7 +117,7 @@
       let stableSince=0;
       await wait(()=>{
         if(location.origin!=='https://arena.ai')throw Error('页面已离开 Arena，无法确认归档；本地记录保留');
-        const dialogs=[...document.querySelectorAll('[role="dialog"],[role="alertdialog"]')].filter(visible);
+        const dialogs=[...document.querySelectorAll('[role="dialog"],[role="alertdialog"]')].filter(d=>visible(d)&&!isSidebarSheet(d));
         if(dialogs.length){
           guard();
           if(dialogs.length!==1||!exact(dialogs[0].querySelector('h2'),['Archive chat','Archive conversation','归档聊天','归档对话']))throw Error('出现未识别的确认框，请手动处理；本地记录保留');

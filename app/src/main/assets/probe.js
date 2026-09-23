@@ -144,7 +144,11 @@
     if (host) { const local = [...host.querySelectorAll('button')].filter(ok); if (local.length === 1) return local[0]; }
     return null;
   }
-  const isGenerating = () => !!document.querySelector('button[aria-label="Stop generating"]');
+  // "Generating" only counts when a Stop button is actually VISIBLE. Arena can
+  // leave a hidden Stop button in the DOM after a reply finishes; matching on mere
+  // presence made quick-send wrongly report "当前回复仍在生成". Also match zh labels.
+  const isGenerating = () => [...document.querySelectorAll('button[aria-label]')]
+    .some(b => visible(b) && /^(stop generating|stop|停止生成|停止回复|停止)$/i.test((b.getAttribute('aria-label') || '').trim()));
 
   const waitFor = (check, message, ms = 15000) => new Promise((resolve, reject) => {
     const end = Date.now() + ms;
