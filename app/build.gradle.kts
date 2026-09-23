@@ -13,8 +13,32 @@ android {
         applicationId = "com.ati.arena"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.2.1"
+    }
+
+    // Fixed release signing (keystore lives in GitHub Secrets; CI decodes it and
+    // points ARENA_KEYSTORE at the file). Local builds without these env vars
+    // simply produce an unsigned release APK — debug builds are unaffected.
+    signingConfigs {
+        create("release") {
+            val ksPath = System.getenv("ARENA_KEYSTORE")
+            if (!ksPath.isNullOrBlank()) {
+                storeFile = file(ksPath)
+                storePassword = System.getenv("ARENA_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ARENA_KEY_ALIAS") ?: "arena"
+                keyPassword = System.getenv("ARENA_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            if (!System.getenv("ARENA_KEYSTORE").isNullOrBlank()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
     }
 
     compileOptions {

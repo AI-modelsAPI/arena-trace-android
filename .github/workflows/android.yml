@@ -30,7 +30,27 @@ jobs:
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon --stacktrace
 
-      - name: Upload APK
+      - name: Decode release keystore
+        run: echo "${{ secrets.ARENA_KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/arena-release.keystore"
+
+      # Signed with the long-lived keystore from Secrets, so every CI build can
+      # be installed as an in-place upgrade over previous CI builds.
+      - name: Build signed release APK
+        env:
+          ARENA_KEYSTORE: ${{ runner.temp }}/arena-release.keystore
+          ARENA_KEYSTORE_PASSWORD: ${{ secrets.ARENA_KEYSTORE_PASSWORD }}
+          ARENA_KEY_ALIAS: ${{ secrets.ARENA_KEY_ALIAS }}
+          ARENA_KEY_PASSWORD: ${{ secrets.ARENA_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Upload signed release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: arena-trace-release-apk
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: arena-trace-debug-apk
