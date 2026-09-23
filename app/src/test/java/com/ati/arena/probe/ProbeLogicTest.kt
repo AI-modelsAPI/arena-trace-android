@@ -204,7 +204,10 @@ class ProbeLogicTest {
 
     @Test fun ownPromptRejectsUserText() {
         assertFalse(ProbeLogic.isOwnPrompt("hello"))
-        assertFalse(ProbeLogic.isOwnPrompt("1+2=")) // not one of the N+N= set
+        assertFalse(ProbeLogic.isOwnPrompt("1+1=2")) // answered → not a bare probe send
+        // Regex-based now: ANY bare arithmetic send counts, incl. randomPrompt().
+        assertTrue(ProbeLogic.isOwnPrompt("1+2="))
+        assertTrue(ProbeLogic.isOwnPrompt("473×82="))
     }
 
     @Test fun compileTargetRejectsEmpty() {
