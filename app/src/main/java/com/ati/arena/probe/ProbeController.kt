@@ -113,7 +113,7 @@ class ProbeController(
                     // removed from the pool and may be hit again in a later round.
                     val outstanding = ProbeLogic.remainingTargets(allTargets, hits)
                     val pacingLabel = if (cfg.findAll) "待命中 ${outstanding.joinToString("、")}" else "命中即停"
-                    val prompt = ProbeLogic.PROMPTS[(round - 1) % ProbeLogic.PROMPTS.size]
+                    val prompt = ProbeLogic.randomPrompt()
                     onProgress("第 $round 轮 · 发送 \"$prompt\" · $pacingLabel")
 
                     // 1) fresh chat, 2) confirm Agent Mode, 3) send probe prompt

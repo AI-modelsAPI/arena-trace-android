@@ -188,6 +188,20 @@ class ProbeLogicTest {
         assertTrue(ProbeLogic.PROMPTS.all { ProbeLogic.isOwnPrompt(it) })
     }
 
+    @Test
+    fun randomPrompt_isSendableAndCleanable() {
+        val seen = mutableSetOf<String>()
+        repeat(200) {
+            val p = ProbeLogic.randomPrompt()
+            // Passes the JS send-guard shape and the cleanup title matcher.
+            assertTrue("not own prompt: $p", ProbeLogic.isOwnPrompt(p))
+            assertTrue("not arithmetic title: $p", ProbeLogic.isArithmeticTitle(p))
+            seen.add(p)
+        }
+        // Randomized: 200 draws must not collapse onto one prompt.
+        assertTrue("prompts not random: ${seen.size} distinct", seen.size > 100)
+    }
+
     @Test fun ownPromptRejectsUserText() {
         assertFalse(ProbeLogic.isOwnPrompt("hello"))
         assertFalse(ProbeLogic.isOwnPrompt("1+2=")) // not one of the N+N= set

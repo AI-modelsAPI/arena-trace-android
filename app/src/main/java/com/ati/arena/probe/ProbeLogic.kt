@@ -11,7 +11,24 @@ object ProbeLogic {
     val DEFAULT_TARGETS = listOf("opus5", "fable5", "gpt6")
 
     // 50 short, cheap, unambiguous arithmetic probe prompts ("1+1=" … "50+50=").
+    // Kept as a deterministic reference set; live probing uses randomPrompt().
     val PROMPTS: List<String> = (1..50).map { "$it+$it=" }
+
+    private val PROMPT_OPERATORS = charArrayOf('+', '-', '*', '/', '×', '÷')
+
+    /**
+     * A fresh random arithmetic prompt ("473×82=", "57+906="). Every probe round
+     * sends a DIFFERENT expression so probe-created chats don't all share one
+     * title. The shape stays `N op N =`, which both the JS send-guard
+     * (isOwnPrompt in probe.js) and the cleanup sweep (isArithmeticTitle)
+     * accept — random content, still instantly identifiable as ours.
+     */
+    fun randomPrompt(): String {
+        val a = kotlin.random.Random.nextInt(1, 1000)
+        val b = kotlin.random.Random.nextInt(1, 1000)
+        val op = PROMPT_OPERATORS.random()
+        return "$a$op$b="
+    }
 
     private val FAMILIES = mapOf(
         "opus5" to """(?:claude[-_\s.]*)?opus[-_\s.]*5(?:[-_.]\d+)?(?!\d)""",
@@ -120,7 +137,10 @@ object ProbeLogic {
         return Regex("""^\s*\d{1,4}\s*[+\-*/×÷]\s*\d{1,4}\s*=\s*$""").matches(s)
     }
 
-    fun isOwnPrompt(t: String?): Boolean = PROMPTS.contains(t)
+    /** Matches any prompt shape the probe is allowed to send (kept in sync with
+     *  the isOwnPrompt guard in probe.js) — including randomPrompt() output. */
+    fun isOwnPrompt(t: String?): Boolean =
+        Regex("""^\s*\d{1,4}\s*[+\-*/×÷]\s*\d{1,4}\s*=\s*$""").matches(t ?: "")
 
     data class SidebarItem(val sessionId: String, val title: String)
 
