@@ -217,9 +217,41 @@
     return { session: id };
   }
 
+  // Fill the CURRENT conversation's composer with arbitrary text and send it.
+  // Unlike send() this is NOT restricted to arithmetic and does NOT require a
+  // fresh /agent — it targets whatever conversation is open. Triggered by an
+  // explicit user long-press, so it may replace an existing draft.
+  async function sendToCurrent(args) {
+    const value = String(args?.text || '');
+    if (!value.trim()) throw Error('发送内容为空');
+    if (value.length > 8000) throw Error('内容过长（上限 8000 字）');
+    if (location.origin !== ARENA) throw Error('已离开 Arena');
+    if (isGenerating()) throw Error('当前回复仍在生成，已停止');
+    const editor = composer();
+    if (!editor) throw Error('未找到输入框');
+    if (!fillPrompt(editor, value)) throw Error('输入内容失败；未发送');
+    const button = await waitFor(() => findSend(editor), '发送按钮不可用；未发送');
+    if (editorText(editor) !== value) throw Error('输入已变化；未发送');
+    button.click();
+    return { sent: true };
+  }
+
   // Sidebar snapshot for title-based cleanup: [{sessionId, title}].
-  function sidebarList() {
-    expandSidebar();
+  // The list is virtualized (only visible links exist in the DOM), so scroll it
+  // to the bottom until the count stops growing before snapshotting.
+  function sidebarScroller() {
+    if (typeof getComputedStyle !== 'function') return null;
+    for (const a of document.querySelectorAll('a[data-sidebar="menu-button"][href]')) {
+      let p = a.parentElement;
+      while (p) {
+        const s = getComputedStyle(p);
+        if (/(auto|scroll)/.test(s.overflowY) && p.scrollHeight > p.clientHeight + 40) return p;
+        p = p.parentElement;
+      }
+    }
+    return null;
+  }
+  function collectSidebar() {
     const seen = new Set(), out = [];
     for (const a of document.querySelectorAll('a[data-sidebar="menu-button"][href]')) {
       let id = null;
@@ -228,7 +260,45 @@
       seen.add(id);
       out.push({ sessionId: id, title: text(a).slice(0, 300) });
     }
-    return { items: out };
+    return out;
+  }
+  async function loadAllSidebar() {
+    const scroller = sidebarScroller();
+    if (!scroller) return;
+    let last = -1, stable = 0;
+    for (let i = 0; i < 30 && stable < 2; i++) {
+      scroller.scrollTop = scroller.scrollHeight;
+      await new Promise(r => setTimeout(r, 300));
+      const n = collectSidebar().length;
+      if (n === last) stable++; else { stable = 0; last = n; }
+    }
+  }
+  async function sidebarList() {
+    expandSidebar();
+    if (!collectSidebar().length) await waitFor(() => collectSidebar().length > 0, '侧栏对话列表未加载', 6000).catch(() => {});
+    await loadAllSidebar();
+    return { items: collectSidebar() };
+  }
+
+  // Navigate to a saved conversation by clicking its sidebar link (SPA nav keeps
+  // this injected script alive). Required before archive, whose guard demands
+  // being on that conversation's own page.
+  function sidebarLink(sessionId) {
+    return [...document.querySelectorAll('a[data-sidebar="menu-button"][href]')].find(a => {
+      try { const u = new URL(a.href, location.origin); return u.origin === ARENA && sessionFromPath(u.pathname) === sessionId; } catch { return false; }
+    }) || null;
+  }
+  async function openConversation(args) {
+    const sessionId = String(args?.sessionId || '');
+    if (!/^[a-zA-Z0-9-]{1,128}$/.test(sessionId)) throw Error('会话 id 无效');
+    if (session() === sessionId) return { session: sessionId };
+    expandSidebar();
+    let link = sidebarLink(sessionId);
+    if (!link) { await loadAllSidebar(); link = sidebarLink(sessionId); }
+    if (!link) throw Error('侧栏未找到该对话');
+    link.click();
+    await waitFor(() => session() === sessionId, '切换到该对话超时', 8000);
+    return { session: sessionId };
   }
 
   async function rename(args) {
@@ -244,7 +314,7 @@
     return r || { archived: true };
   }
 
-  const ACTIONS = { precheck, newChat, ensureAgentMode, send, sidebarList, rename, archive };
+  const ACTIONS = { precheck, newChat, ensureAgentMode, send, sendToCurrent, sidebarList, openConversation, rename, archive };
 
   async function call(action, argsJson, reqId) {
     let res;

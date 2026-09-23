@@ -65,6 +65,26 @@ class ProbeController(
         job = null
     }
 
+    /**
+     * One-off: fill the CURRENTLY open conversation's composer with [text] and send.
+     * Independent of the probe loop (does not touch [job]); refused while a probe
+     * is running so the two don't fight over the composer.
+     */
+    fun quickSend(text: String, onResult: (String) -> Unit) {
+        if (isRunning) { onResult("探针运行中，请先停止再发送"); return }
+        if (text.isBlank()) { onResult("请先在面板设置要发送的内容"); return }
+        scope.launch(Dispatchers.Main) {
+            try {
+                rpc("sendToCurrent", JSONObject().put("text", text))
+                onResult("已发送到当前对话")
+            } catch (_: CancellationException) {
+                onResult("发送已取消")
+            } catch (e: Exception) {
+                onResult("发送失败：${e.message}")
+            }
+        }
+    }
+
     fun start(cfg: Config) {
         if (isRunning) { onProgress("探针已在运行"); return }
         job = scope.launch(Dispatchers.Main) {
@@ -156,36 +176,61 @@ class ProbeController(
     /**
      * Sidebar title sweep: archive chats whose title is bare arithmetic (our
      * probe residue). Never deletes; never touches user-named chats.
+     *
+     * archive() requires being ON the target chat's own page (its guard checks
+     * location.pathname === /agent/{sessionId}), so we navigate to each candidate
+     * via a real sidebar click (openConversation) before archiving. The candidate
+     * list is recomputed each pass because titles/sidebar entries shift as chats
+     * get archived. keepSessionId (the currently-open chat) is never archived.
      */
     fun cleanup(keepSessionId: String?) {
         if (isRunning) { onProgress("探针运行中，请先停止再清理"); return }
         job = scope.launch(Dispatchers.Main) {
             try {
                 onProgress("扫描侧栏算式标题…")
-                val listData = rpc("sidebarList")
-                val items = listData.optJSONArray("items")
-                val sidebar = buildList {
-                    if (items != null) for (i in 0 until items.length()) {
-                        val o = items.getJSONObject(i)
-                        add(ProbeLogic.SidebarItem(o.optString("sessionId"), o.optString("title")))
-                    }
-                }
-                val candidates = ProbeLogic.arithmeticCleanupCandidates(sidebar, keepSessionId)
-                if (candidates.isEmpty()) { onFinished("没有需要归档的算式标题对话"); return@launch }
-                onProgress("发现 ${candidates.size} 个算式标题对话，开始归档")
                 var ok = 0
-                for (c in candidates) {
+                var failed = 0
+                val done = HashSet<String>()   // sessions we've handled (archived or failed)
+                var totalSeen = 0
+                while (true) {
                     ensureActive()
-                    runCatching { rpc("archive", JSONObject().put("sessionId", c.sessionId)) }
-                        .onSuccess { ok++; onProgress("已归档 ${c.title}") }
-                        .onFailure { onProgress("归档 ${c.title} 失败：${it.message}") }
-                    delay(400)
+                    val sidebar = fetchSidebar()
+                    val candidates = ProbeLogic.arithmeticCleanupCandidates(sidebar, keepSessionId)
+                        .filter { it.sessionId !in done }
+                    if (totalSeen == 0) totalSeen = candidates.size
+                    val c = candidates.firstOrNull() ?: break
+                    if (ok + failed == 0) onProgress("发现算式标题对话，开始归档")
+                    try {
+                        // Navigate to the chat first; archive's guard needs its page.
+                        rpc("openConversation", JSONObject().put("sessionId", c.sessionId))
+                        rpc("archive", JSONObject().put("sessionId", c.sessionId))
+                        ok++; done.add(c.sessionId); onProgress("已归档 ${c.title}")
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (e: Exception) {
+                        failed++; done.add(c.sessionId)
+                        onProgress("归档 ${c.title} 失败：${e.message}")
+                        if (failed >= 3) { onProgress("连续失败已中止"); break }
+                    }
+                    delay(500)
                 }
-                onFinished("清理完成 · 已归档 $ok/${candidates.size}（仅归档，未删除）")
+                if (ok == 0 && failed == 0) onFinished("没有需要归档的算式标题对话")
+                else onFinished("清理完成 · 已归档 $ok" + (if (failed > 0) "，失败 $failed" else "") + "（仅归档，未删除）")
             } catch (_: CancellationException) {
                 onFinished("清理已停止")
             } catch (e: Exception) {
                 onFinished("清理中断：${e.message}")
+            }
+        }
+    }
+
+    private suspend fun fetchSidebar(): List<ProbeLogic.SidebarItem> {
+        val listData = rpc("sidebarList")
+        val items = listData.optJSONArray("items")
+        return buildList {
+            if (items != null) for (i in 0 until items.length()) {
+                val o = items.getJSONObject(i)
+                add(ProbeLogic.SidebarItem(o.optString("sessionId"), o.optString("title")))
             }
         }
     }

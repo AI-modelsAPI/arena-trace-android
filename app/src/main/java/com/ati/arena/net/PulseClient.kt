@@ -13,7 +13,7 @@ object PulseClient {
         .readTimeout(8, TimeUnit.SECONDS)
         .build()
 
-    data class Pulse(val percent: Int, val resetAt: Long)
+    data class Pulse(val percent: Int, val refreshedAt: Long)
 
     sealed interface Result {
         data class Ok(val pulse: Pulse) : Result
@@ -40,10 +40,12 @@ object PulseClient {
                         val obj = JSONObject(res.body!!.string())
                         val percent = obj.optInt("pulse", -1)
                         if (percent !in 0..100) return Result.Err("额度返回格式未识别")
-                        val resetAt = runCatching {
+                        // Raw timestamp the quota window was last refreshed; the caller
+                        // converts this into an anchored reset instant (see PulseTiming).
+                        val refreshedAt = runCatching {
                             Instant.parse(obj.getString("refreshedAt")).toEpochMilli()
                         }.getOrDefault(0L)
-                        Result.Ok(Pulse(percent, resetAt))
+                        Result.Ok(Pulse(percent, refreshedAt))
                     }
                 }
             }

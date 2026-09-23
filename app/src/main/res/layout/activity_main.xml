@@ -253,6 +253,51 @@
                 android:text=""
                 android:textColor="#66000000"
                 android:textSize="10sp" />
+
+            <!-- ── Quick send (long-press the ball) ───────────────── -->
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginTop="16dp"
+                android:background="#22000000" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="长按快捷发送"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="长按悬浮球，把下面的内容填入当前对话输入框并发送。会发送真实消息、消耗额度。"
+                android:textColor="#88000000"
+                android:textSize="10sp" />
+
+            <EditText
+                android:id="@+id/quick_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:gravity="top"
+                android:hint="输入长按后要发送的内容"
+                android:importantForAutofill="no"
+                android:inputType="textMultiLine"
+                android:maxLines="4"
+                android:minLines="2"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/quick_send"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="发送到当前对话"
+                android:textSize="12sp" />
         </LinearLayout>
         </ScrollView>
     </com.google.android.material.card.MaterialCardView>

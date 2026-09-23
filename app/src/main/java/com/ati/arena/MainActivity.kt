@@ -20,6 +20,7 @@ import androidx.lifecycle.lifecycleScope
 import com.ati.arena.bridge.ArenaBridge
 import com.ati.arena.bridge.ProbeBridge
 import com.ati.arena.net.PulseClient
+import com.ati.arena.net.PulseTiming
 import com.ati.arena.net.TraceClient
 import com.ati.arena.net.WarmUp
 import com.ati.arena.probe.ProbeController
@@ -54,6 +55,9 @@ class MainActivity : AppCompatActivity() {
     private var pulseError = ""
     private var lastPulseFetch = 0L
     private var pulseBlockedUntil = 0L
+    // Anchored quota-reset instant (ms). Held stable across refetches so the
+    // countdown doesn't restart every minute; see PulseTiming.
+    private var resetAtAnchor = 0L
     private var lastCookieSig = ""
     private var currentModel = ""
     // Dedup guard: the SSE tap can surface the same run token repeatedly. Pulling
@@ -67,6 +71,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var probe: ProbeController
     private lateinit var store: Store
     private var lastSessionId = ""
+    // Guards restoreModelForSession so it fires once per session change (SPA nav
+    // can call the URL-changed handler repeatedly for the same URL).
+    private var lastRestoredSession = ""
 
     // Warm-up: poll for cf_clearance / non-challenge instead of a fixed timer.
     private var advancedToAgent = false
@@ -108,6 +115,13 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView, url: String) {
                 onArenaPageFinished(view, url)
             }
+            // Arena is a SPA: opening a saved chat from the sidebar is a client-side
+            // (pushState) navigation that does NOT fire onPageFinished. This callback
+            // does fire on those in-app URL changes, so it's where we echo the
+            // remembered model when the user switches conversations.
+            override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
+                onArenaUrlChanged(url)
+            }
         }
         setupControls()
         // Cloudflare warm-up: load the site root first so the managed challenge
@@ -118,6 +132,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupControls() {
         ball.setOnClickListener { togglePanel() }
+        // Long-press the ball → send the panel's quick-send text to the current chat.
+        ball.setOnLongClickListener { triggerQuickSend(); true }
         // Ball and panel are mutually exclusive and share ONE logical position.
         // Each is independently draggable; a real drag updates the shared anchor
         // so the other view reappears exactly where this one was left.
@@ -139,6 +155,7 @@ class MainActivity : AppCompatActivity() {
         val rounds = findViewById<EditText>(R.id.probe_rounds)
         val findAll = findViewById<CheckBox>(R.id.probe_find_all)
         val rename = findViewById<CheckBox>(R.id.probe_rename)
+        val quick = findViewById<EditText>(R.id.quick_text)
 
         // Restore the last-used panel values.
         store.loadPanelPrefs().let {
@@ -146,6 +163,7 @@ class MainActivity : AppCompatActivity() {
             rounds.setText(it.maxRounds.toString())
             findAll.isChecked = it.findAll
             rename.isChecked = it.autoRename
+            quick.setText(it.quickText)
         }
 
         fun persistPanel() = store.savePanelPrefs(
@@ -154,6 +172,7 @@ class MainActivity : AppCompatActivity() {
                 maxRounds = rounds.text.toString().toIntOrNull()?.coerceIn(1, 100) ?: 5,
                 findAll = findAll.isChecked,
                 autoRename = rename.isChecked,
+                quickText = quick.text.toString(),
             )
         )
         findAll.setOnCheckedChangeListener { _, _ -> persistPanel() }
@@ -179,6 +198,17 @@ class MainActivity : AppCompatActivity() {
             findViewById<TextView>(R.id.probe_log).text = ""
             probe.cleanup(keepSessionId = lastSessionId.ifEmpty { null })
         }
+        // Quick send: fills the current conversation's composer and sends. The
+        // panel button and the ball long-press share this one path.
+        findViewById<Button>(R.id.quick_send).setOnClickListener { persistPanel(); triggerQuickSend() }
+    }
+
+    /** Read the quick-send text from the panel and dispatch it to the current chat. */
+    private fun triggerQuickSend() {
+        val text = findViewById<EditText>(R.id.quick_text).text.toString()
+        if (text.isBlank()) { appendProbeLog("请先填写要发送的内容"); return }
+        appendProbeLog("正在发送到当前对话…")
+        probe.quickSend(text) { result -> appendProbeLog(result) }
     }
 
     private fun setProbeRunningUi(running: Boolean) {
@@ -307,16 +337,38 @@ class MainActivity : AppCompatActivity() {
             pollWarmUp(view)
             return
         }
-        // Opening a saved conversation (/agent/{sessionId}) → echo the model we
-        // resolved for it earlier from local history, so the ball/panel show the
-        // model name even before a new run token streams in.
-        HistoryLogic.sessionFromPath(path)?.let { restoreModelForSession(it) }
         injectSnoop(view)
+        // A full page load of a saved conversation → echo its remembered model.
+        HistoryLogic.sessionFromPath(path)?.let { restoreModelForSession(it) }
     }
 
-    /** Show the locally remembered model(s) for a conversation, if any. */
+    /**
+     * SPA navigation (pushState) handler — fires when the user opens a saved chat
+     * from the sidebar without a full page reload. We only echo the remembered
+     * model; snoop.js stays injected across SPA nav so no re-injection is needed.
+     */
+    private fun onArenaUrlChanged(url: String) {
+        if (!url.startsWith("https://arena.ai/")) return
+        val path = runCatching { java.net.URI(url).path ?: "" }.getOrDefault("")
+        HistoryLogic.sessionFromPath(path)?.let { restoreModelForSession(it) }
+    }
+
+    /**
+     * Show the locally remembered model(s) for a conversation, if any. Guarded so
+     * it runs once per session change and never clobbers a model we've already
+     * resolved live for the same session (the live snoop→trace result wins).
+     */
     private fun restoreModelForSession(sessionId: String) {
+        if (sessionId == lastRestoredSession) return
+        lastRestoredSession = sessionId
         lastSessionId = sessionId
+        // If we already resolved this exact session live this run, keep that.
+        sessionModels[sessionId]?.let { live ->
+            currentModel = live
+            hudModel.text = live
+            applyBallModel(live.substringBefore(" / "))
+            return
+        }
         val models = store.modelsFor(sessionId)
         if (models.isEmpty()) return
         val joined = models.joinToString(" / ")
@@ -412,7 +464,14 @@ class MainActivity : AppCompatActivity() {
                     lastCookieSig = sig
                     lastPulseFetch = now
                     when (val r = PulseClient.fetch(cookies)) {
-                        is PulseClient.Result.Ok -> { pulse = r.pulse; pulseError = "" }
+                        is PulseClient.Result.Ok -> {
+                            pulse = r.pulse
+                            pulseError = ""
+                            // Convert refreshedAt → reset instant, then anchor it so
+                            // per-minute refetch jitter can't restart the countdown.
+                            val candidate = PulseTiming.resetTimeFromRefreshedAt(r.pulse.refreshedAt, now)
+                            resetAtAnchor = PulseTiming.anchorReset(resetAtAnchor, candidate, now)
+                        }
                         is PulseClient.Result.Err -> {
                             pulseError = r.message
                             if (r.retryAfterMs > 0) pulseBlockedUntil = now + minOf(r.retryAfterMs, 600_000)
@@ -434,8 +493,8 @@ class MainActivity : AppCompatActivity() {
             if (currentModel.isEmpty()) { ball.centerIsModel = false; ball.centerTop = "…"; ball.centerBottom = "" }
             return
         }
-        val countdown = if (p.resetAt > 0) {
-            val ms = p.resetAt - System.currentTimeMillis()
+        val countdown = if (resetAtAnchor > 0) {
+            val ms = resetAtAnchor - System.currentTimeMillis()
             if (ms > 0) " · ${formatCountdown(ms)} 后重置" else " · 已到重置时间"
         } else ""
         hudPulse.text = "剩余额度 ${p.percent}%$countdown" + (if (pulseError.isNotEmpty()) " · $pulseError" else "")

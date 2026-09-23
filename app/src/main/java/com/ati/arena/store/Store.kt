@@ -33,6 +33,7 @@ class Store(context: Context) {
         val maxRounds: Int,
         val findAll: Boolean,
         val autoRename: Boolean,
+        val quickText: String,
     )
 
     fun loadPanelPrefs(): PanelPrefs = PanelPrefs(
@@ -40,6 +41,7 @@ class Store(context: Context) {
         maxRounds = prefs.getInt(KEY_ROUNDS, 5),
         findAll = prefs.getBoolean(KEY_FIND_ALL, true),
         autoRename = prefs.getBoolean(KEY_RENAME, true),
+        quickText = prefs.getString(KEY_QUICK_TEXT, "") ?: "",
     )
 
     fun savePanelPrefs(p: PanelPrefs) {
@@ -48,6 +50,7 @@ class Store(context: Context) {
             .putInt(KEY_ROUNDS, p.maxRounds.coerceIn(1, 100))
             .putBoolean(KEY_FIND_ALL, p.findAll)
             .putBoolean(KEY_RENAME, p.autoRename)
+            .putString(KEY_QUICK_TEXT, p.quickText)
             .apply()
     }
 
@@ -57,5 +60,6 @@ class Store(context: Context) {
         const val KEY_ROUNDS = "probe_rounds"
         const val KEY_FIND_ALL = "probe_find_all"
         const val KEY_RENAME = "probe_rename"
+        const val KEY_QUICK_TEXT = "quick_send_text"
     }
 }
