@@ -25,6 +25,7 @@ import com.ati.arena.net.TraceClient
 import com.ati.arena.net.WarmUp
 import com.ati.arena.probe.ProbeController
 import com.ati.arena.probe.ProbeLogic
+import com.ati.arena.probe.TurnTracker
 import com.ati.arena.store.HistoryLogic
 import com.ati.arena.store.Store
 import com.ati.arena.ui.FloatingBallView
@@ -70,18 +71,10 @@ class MainActivity : AppCompatActivity() {
     // requests that otherwise pile up and risk 429s.
     private var lastToken = ""
 
-    // Per-turn tracking for the CURRENT conversation. Arena issues a fresh run
-    // token per turn, and a turn may be routed to a different model — so each new
-    // token is a new turn. We surface which model answered each turn so the user
-    // can see mid-conversation model routing.
-    private var turnSessionId = ""
-    private var turnCount = 0
-    private var lastTurnModel = ""
-    private var firstTurnModel = ""    // the conversation's first resolved model
-    // true when the current turn's model differs from the conversation's first —
-    // the ball center draws the name orange-yellow to flag the routing change.
-    private var currentRouted = false
-    private val turnHistory = ArrayDeque<String>()  // recent "R{n} model", newest last
+    // Per-turn tracking for the CURRENT conversation (turn numbers, first model,
+    // routed flag, HUD history). Conversation switches reset it — authoritatively
+    // at token time inside TurnTracker, best-effort via navigation events.
+    private val turns = TurnTracker()
 
     // sessionId -> resolved model name(s), populated by the snoop→trace pipeline.
     // The auto-probe reads this to associate a probe round with its model.
@@ -537,12 +530,8 @@ class MainActivity : AppCompatActivity() {
         lastSessionId = ""
         currentModel = ""
         // New conversation → drop per-turn history so counting restarts at 1.
-        turnSessionId = ""
-        turnCount = 0
-        lastTurnModel = ""
-        firstTurnModel = ""
-        currentRouted = false
-        turnHistory.clear()
+        // (Best-effort complement to the token-time reset in turns.onToken.)
+        turns.reset()
         if (ballBusy) return
         hudModel.text = "模型待确认"
         hudStatus.text = "等待会话流…"
@@ -560,6 +549,9 @@ class MainActivity : AppCompatActivity() {
         if (sessionId == lastRestoredSession) return
         lastRestoredSession = sessionId
         lastSessionId = sessionId
+        // The routed flag compares against the LIVE-tracked conversation's first
+        // model; a remembered model for another chat must not inherit it.
+        if (sessionId != turns.sessionId) turns.clearRouted()
         // If we already resolved this exact session live this run, keep that.
         sessionModels[sessionId]?.let { live ->
             currentModel = live
@@ -621,16 +613,12 @@ class MainActivity : AppCompatActivity() {
         lastToken = token
         if (sessionId.isNotEmpty()) lastSessionId = sessionId
 
-        // A fresh token = a new turn. Reset the per-turn counter when the session
-        // changes; otherwise this is the next turn of the SAME conversation.
-        if (sessionId != turnSessionId) {
-            turnSessionId = sessionId
-            turnCount = 0
-            lastTurnModel = ""
-            turnHistory.clear()
-        }
-        turnCount += 1
-        val thisTurn = turnCount
+        // A fresh token = a new turn. A non-empty sessionId that differs means
+        // the chat was SWITCHED (sidebar tap, probe newChat): reset the turn
+        // state here, authoritatively — a navigation event may never arrive
+        // (replaceState) or be skipped by the new-chat sentinel guard, and a
+        // stale firstModel would wrongly flag same-model turns as "routed".
+        val (thisTurn, _) = turns.onToken(sessionId)
 
         runOnUiThread { hudStatus.text = "第 $thisTurn 轮 · 已截获令牌，正在识别模型…" }
         traceJob?.cancel()
@@ -638,43 +626,31 @@ class MainActivity : AppCompatActivity() {
             val result = traceClient.fetchModels(token, sessionId)
             withContext(Dispatchers.Main) {
                 if (result.ok) {
-                    currentModel = result.models.joinToString(" / ")
+                    val joined = result.models.joinToString(" / ")
                     if (sessionId.isNotEmpty()) {
-                        sessionModels[sessionId] = currentModel
+                        sessionModels[sessionId] = joined
                         // Whitelist-only persistence: model name(s) keyed by sessionId.
                         // Never tokens, trace, cookies, or conversation text.
                         store.saveModels(sessionId, result.models)
                     }
-                    recordTurn(thisTurn, currentModel)
-                    hudModel.text = currentModel
-                    applyBallModel(result.models.firstOrNull() ?: currentModel)
+                    // Stale-result guard: if the conversation switched (or a newer
+                    // token superseded this one) while the trace was in flight,
+                    // keep only the session→model mapping above — an old chat's
+                    // model must not rewrite the current chat's HUD, ball, or
+                    // turn history.
+                    if (token != lastToken ||
+                        (sessionId.isNotEmpty() && sessionId != turns.sessionId)
+                    ) return@withContext
+                    currentModel = joined
+                    hudModel.text = joined
+                    hudStatus.text = turns.record(thisTurn, joined)
+                    applyBallModel(result.models.firstOrNull() ?: joined)
                 } else {
+                    if (token != lastToken) return@withContext
                     hudStatus.text = "第 $thisTurn 轮 · ${result.error}"
                 }
             }
         }
-    }
-
-    /**
-     * Record which model answered [turn] and refresh the status line so the user
-     * can see per-turn model routing (Arena sometimes routes different turns of
-     * one conversation to different models). Also flags the ball center orange-
-     * yellow when a turn's model differs from the conversation's FIRST model.
-     */
-    private fun recordTurn(turn: Int, model: String) {
-        if (firstTurnModel.isEmpty()) firstTurnModel = model
-        // Routed = this turn's model differs from the conversation's first model.
-        currentRouted = model != firstTurnModel
-        val changedFromPrev = lastTurnModel.isNotEmpty() && model != lastTurnModel
-        lastTurnModel = model
-        turnHistory.addLast("R$turn $model")
-        while (turnHistory.size > 6) turnHistory.removeFirst()
-        val head = when {
-            currentRouted && changedFromPrev -> "第 $turn 轮 · 已切换模型 → $model"
-            currentRouted -> "第 $turn 轮 · $model（非首轮模型）"
-            else -> "第 $turn 轮 · $model"
-        }
-        hudStatus.text = head + "\n本会话: " + turnHistory.joinToString(" · ")
     }
 
     /**
@@ -806,7 +782,7 @@ class MainActivity : AppCompatActivity() {
         if (id.isEmpty()) { ball.centerIsModel = false; ball.centerRouted = false; ball.centerTop = "…"; ball.centerBottom = ""; return }
         ball.centerIsModel = true
         // Orange-yellow when this turn's model differs from the conversation's first.
-        ball.centerRouted = currentRouted
+        ball.centerRouted = turns.routed
         val parts = id.split('-', ' ', '_', '/').filter { it.isNotBlank() }
         val versionStart = parts.indexOfFirst { it.first().isDigit() }
         if (versionStart <= 0) {
