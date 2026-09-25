@@ -14,13 +14,16 @@
  *   - rename/archive strictly through Arena's own menus, no private endpoints
  */
 (() => {
+  // Re-injection guard: onPageFinished can fire more than once per document.
+  const VERSION = 3;
+  if ((globalThis.ArenaProbe?.version || 0) >= VERSION) return;
   const ARENA = 'https://arena.ai';
   const NEW_CHAT_LABELS = ['New Chat', 'New chat', '新建聊天', '新对话', '新建对话'];
 
   const visible = e => !!e?.isConnected && e.getClientRects().length > 0;
   const session = () => location.pathname.match(/^\/agent\/([a-zA-Z0-9-]{1,128})\/?$/)?.[1] || null;
   const agentPath = () => location.pathname.replace(/\/$/, '') === '/agent';
-  const clean = t => String(t ?? '').replace(/[\u200b\u200c\u200d\ufeff]/g, '').trim();
+  const clean = t => String(t ?? '').replace(/\p{Cf}/gu, '').trim();
   const text = e => (e?.textContent || '').trim();
   const exact = (e, words) => words.includes(text(e));
 
@@ -77,19 +80,6 @@
       const dump = all.map(e => `${String(e.tagName || '?').toLowerCase()}${e.id ? '#' + e.id : ''}:"${editorText(e).slice(0, 10)}…"`).join(' ');
       throw Error(`输入框有未发送内容（"${editorText(offender).slice(0, 24)}" · 共${all.length}个输入区 ${dump}），已停止；不会覆盖草稿`);
     }
-  }
-  function expandSidebar() {
-    const buttons = [...document.querySelectorAll('button[aria-label]')].filter(b => visible(b) && !b.disabled);
-    const opener = buttons.find(b => ['Open sidebar', '展开侧栏', '打开侧边栏', '展开侧边栏'].includes(b.getAttribute('aria-label')))
-      || buttons.find(b => ['Toggle Sidebar', 'Toggle sidebar', '切换侧栏'].includes(b.getAttribute('aria-label')) && b.closest?.('[data-state="collapsed"]'));
-    opener?.click();
-  }
-  function collapseSidebar() {
-    const buttons = [...document.querySelectorAll('button[aria-label]')].filter(b => visible(b) && !b.disabled);
-    const closer = buttons.find(b => ['Close sidebar', '收起侧栏', '关闭侧边栏', '收起侧边栏'].includes(b.getAttribute('aria-label')))
-      || buttons.find(b => ['Toggle Sidebar', 'Toggle sidebar', '切换侧栏'].includes(b.getAttribute('aria-label')));
-    closer?.click();
-    return { closed: true };
   }
   function newChatControl() {
     const agentLink = a => { try { const u = new URL(a.href, location.origin); return u.origin === ARENA && u.pathname.replace(/\/$/, '') === '/agent'; } catch { return false; } };
@@ -191,7 +181,7 @@
     // Prefer the New Chat control without opening the sidebar; only expand if it
     // isn't reachable, so probe rounds don't keep toggling the sidebar.
     let control = newChatControl();
-    if (!control) { expandSidebar(); control = await waitFor(() => newChatControl(), '未找到 New Chat 入口，已停止'); }
+    if (!control) { await ensureSidebarOpen(); control = await waitFor(() => newChatControl(), '未找到 New Chat 入口，已停止'); }
     control.click();
     await waitFor(() => !session() && agentPath(), '新建聊天超时');
     await waitFor(() => composer(), '等待新聊天输入框超时');
@@ -249,121 +239,229 @@
     return { sent: true };
   }
 
-  // Sidebar snapshot for title-based cleanup: [{sessionId, title}].
-  // The list is virtualized (only visible links exist in the DOM), so scroll it
-  // to the bottom until the count stops growing before snapshotting.
+  // ---- sidebar: open/close, full scan, reveal, archive ----
+  //
+  // The sidebar list is virtualized AND lazy-loaded: only rows near the viewport
+  // are mounted, and older chats load when the list is scrolled to the bottom.
+  // The old sweep scrolled to the bottom first and snapshotted only what was
+  // mounted there, so the NEWEST rows (top of the list, usually the probe's own
+  // residue) were never collected. sidebarScan walks the list top → bottom and
+  // unions every row it sees, remembering the scroll offset where each row was
+  // found so the archiver can jump straight back to it.
+
+  const SIDEBAR_LINK = 'a[data-sidebar="menu-button"][href]';
+  const OPEN_LABELS = ['Open sidebar', '展开侧栏', '打开侧边栏', '展开侧边栏'];
+  const CLOSE_LABELS = ['Close sidebar', '收起侧栏', '关闭侧边栏', '收起侧边栏'];
+  const TOGGLE_LABELS = ['Toggle Sidebar', 'Toggle sidebar', '切换侧栏'];
+  const SHOW_MORE = /^(show more|load more|see more|view more|show all|显示更多|加载更多|查看更多|展开更多|显示全部)$/i;
+  const LOADING = '[aria-busy="true"], [role="progressbar"], .animate-spin';
+  const HREF_SESSION = /^(?:https:\/\/arena\.ai)?\/agent\/([a-zA-Z0-9-]{1,128})\/?(?:[?#].*)?$/;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  // Same canonical form as ProbeLogic.normalizeTitle (Kotlin) — keep in sync.
+  const normTitle = t => String(t ?? '').normalize('NFKC').replace(/\p{Cf}/gu, '')
+    .replace(/[\u2010-\u2015\u2212\u2796\uFE58\uFE63\uFF0D]/g, '-')
+    .replace(/[\u00D7\u2715\u2716\u2A09\u2A2F\u2217\u22C5\u2219\u00B7]/g, '×')
+    .replace(/[\u00F7\u2215\u2044\u2797]/g, '÷').replace(/\u2795/g, '+')
+    .replace(/\s+/g, ' ').trim();
+  const isArithmeticTitle = t => /^\d{1,4}\s*[+\-*/×÷]\s*\d{1,4}\s*=$/.test(normTitle(t));
+
+  function linkSession(a) {
+    const href = a.getAttribute?.('href') || '';
+    const m = href.match(HREF_SESSION);
+    if (m) return m[1];
+    try { const u = new URL(a.href, location.origin); return u.origin === ARENA ? sessionFromPath(u.pathname) : null; } catch { return null; }
+  }
+  const sidebarLinks = () => [...document.querySelectorAll(SIDEBAR_LINK)].filter(a => linkSession(a));
+  const shown = a => visible(a) && !a.closest?.('[data-state="collapsed"][data-collapsible]');
+  const sidebarIsOpen = () => sidebarLinks().some(shown);
+  function sidebarLink(sessionId) {
+    const all = sidebarLinks().filter(a => linkSession(a) === sessionId);
+    return all.find(shown) || null;
+  }
+  const labelButtons = () => [...document.querySelectorAll('button[aria-label]')].filter(b => visible(b) && !b.disabled);
+  const aria = b => (b.getAttribute('aria-label') || '').trim();
+
+  // Set when the probe itself opened the sidebar, so it only closes what it opened
+  // (on a tablet/desktop layout the sidebar may be open by the user's choice).
+  let openedByProbe = false;
+
+  function expandSidebar() {
+    const buttons = labelButtons();
+    const opener = buttons.find(b => OPEN_LABELS.includes(aria(b)))
+      || buttons.find(b => TOGGLE_LABELS.includes(aria(b)) && b.closest?.('[data-state="collapsed"]'))
+      || (!sidebarIsOpen() ? buttons.find(b => TOGGLE_LABELS.includes(aria(b))) : null);
+    if (!opener) return false;
+    opener.click();
+    return true;
+  }
+  async function ensureSidebarOpen() {
+    if (sidebarIsOpen()) return { open: true, opened: false };
+    if (!expandSidebar()) {
+      const ok = await waitFor(() => sidebarIsOpen(), '', 1200).catch(() => false);
+      return { open: !!ok, opened: false };
+    }
+    const ok = await waitFor(() => sidebarIsOpen(), '', 4000).catch(() => false);
+    if (ok) openedByProbe = true;
+    return { open: !!ok, opened: !!ok };
+  }
+  // Close the sidebar — only when it is actually open. The old version clicked
+  // the toggle unconditionally, which OPENED a closed sidebar. With
+  // onlyIfOpenedByProbe it leaves a sidebar the user opened alone.
+  function collapseSidebar(args) {
+    if (args?.onlyIfOpenedByProbe && !openedByProbe) return { closed: false, reason: 'not-ours' };
+    openedByProbe = false;
+    if (!sidebarIsOpen()) return { closed: false, reason: 'already-closed' };
+    const buttons = labelButtons();
+    const closer = buttons.find(b => CLOSE_LABELS.includes(aria(b)))
+      || buttons.find(b => TOGGLE_LABELS.includes(aria(b)) && !b.closest?.('[data-state="collapsed"]'));
+    if (closer) { closer.click(); return { closed: true }; }
+    // Phone sheet without a labelled close button: Escape dismisses Radix sheets.
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+    return { closed: true, via: 'escape' };
+  }
   function sidebarScroller() {
     if (typeof getComputedStyle !== 'function') return null;
-    for (const a of document.querySelectorAll('a[data-sidebar="menu-button"][href]')) {
+    for (const a of sidebarLinks()) {
       let p = a.parentElement;
-      while (p) {
+      while (p && p !== document.body) {
         const s = getComputedStyle(p);
-        if (/(auto|scroll)/.test(s.overflowY) && p.scrollHeight > p.clientHeight + 40) return p;
+        if (/(auto|scroll)/.test(s.overflowY) && p.scrollHeight > p.clientHeight + 4) return p;
         p = p.parentElement;
       }
     }
     return null;
   }
-  function collectSidebar() {
-    const seen = new Set(), out = [];
-    for (const a of document.querySelectorAll('a[data-sidebar="menu-button"][href]')) {
-      let id = null;
-      try { const u = new URL(a.href, location.origin); if (u.origin === ARENA) id = sessionFromPath(u.pathname); } catch { id = null; }
-      if (!id || seen.has(id)) continue;
-      seen.add(id);
-      // clean(): strip zero-width chars Arena sometimes injects into titles —
-      // otherwise the Kotlin arithmetic-title regex misses those rows (residue).
-      out.push({ sessionId: id, title: clean(text(a)).slice(0, 300) });
-    }
-    return out;
+  const atBottom = s => s.scrollTop + s.clientHeight >= s.scrollHeight - 4;
+  function clickShowMore(scope) {
+    const root = scope || document;
+    const btn = [...root.querySelectorAll('button, [role="button"]')].find(b =>
+      visible(b) && !b.disabled && !b.hasAttribute('aria-haspopup') && SHOW_MORE.test(text(b)));
+    if (!btn) return false;
+    btn.click();
+    return true;
   }
-  async function loadAllSidebar() {
-    const scroller = sidebarScroller();
-    if (!scroller) return;
-    // Step DOWN gradually instead of jumping to scrollHeight: virtualized lists
-    // often only fetch/render more rows in response to incremental scrolling.
-    let last = -1, stable = 0;
-    for (let i = 0; i < 40 && stable < 3; i++) {
-      const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 4;
-      scroller.scrollTop = atBottom ? scroller.scrollHeight
-        : scroller.scrollTop + Math.max(200, scroller.clientHeight);
-      await new Promise(r => setTimeout(r, 350));
-      const n = collectSidebar().length;
-      if (n === last) stable++; else { stable = 0; last = n; }
-    }
+  function sidebarState() {
+    return { open: sidebarIsOpen(), openedByProbe, current: session(), rows: sidebarLinks().length };
   }
 
   /**
-   * Scroll the (virtualized) sidebar until the row for sessionId is actually
-   * MOUNTED in the DOM. The cleanup sweep must do this before archiving:
-   * loadAllSidebar leaves the list scrolled to the bottom, so top rows are
-   * unmounted and archive()'s link lookup would fail, leaving residue behind.
+   * Full sidebar inventory: [{sessionId, title, pos}] where pos is the scroll
+   * offset at which the row was seen. `complete` is false when the scan hit its
+   * step budget before the list stopped growing.
+   */
+  async function sidebarScan(args) {
+    const opened = await ensureSidebarOpen();
+    if (!opened.open) throw Error('无法打开侧栏');
+    if (!sidebarLinks().length) await waitFor(() => sidebarLinks().length > 0, '', 6000).catch(() => {});
+    const seen = new Map();
+    const scroller = sidebarScroller();
+    const collect = () => {
+      const pos = scroller ? Math.round(scroller.scrollTop) : 0;
+      for (const a of sidebarLinks()) {
+        const id = linkSession(a);
+        const title = normTitle(text(a)).slice(0, 300);
+        const prev = seen.get(id);
+        if (!prev) seen.set(id, { sessionId: id, title, pos });
+        else if (title && prev.title !== title) prev.title = title;
+      }
+    };
+    const result = complete => ({ items: [...seen.values()], current: session(), complete, openedSidebar: opened.opened });
+    if (!scroller) { collect(); return result(true); }
+
+    const maxSteps = Math.max(20, Math.min(2000, Number(args?.maxSteps) || 800));
+    const step = () => Math.max(60, Math.floor(scroller.clientHeight * 0.75));
+    scroller.scrollTop = 0;
+    await sleep(250);
+    collect();
+    let quiet = 0, lastHeight = -1, lastCount = -1;
+    for (let i = 0; i < maxSteps; i++) {
+      if (!atBottom(scroller)) {
+        scroller.scrollTop = Math.min(scroller.scrollTop + step(), scroller.scrollHeight);
+        await sleep(140);
+        collect();
+        continue;
+      }
+      // At the bottom: give lazy loading (or a "show more" button) time to add rows.
+      const clicked = clickShowMore(scroller);
+      await sleep(clicked ? 700 : 400);
+      collect();
+      const height = scroller.scrollHeight, count = seen.size;
+      if (height === lastHeight && count === lastCount && !scroller.querySelector(LOADING)) {
+        if (++quiet >= 4) return result(true);
+      } else quiet = 0;
+      lastHeight = height; lastCount = count;
+    }
+    return result(false);
+  }
+
+  /**
+   * Scroll the virtualized sidebar until sessionId's row is MOUNTED and visible.
+   * Tries the remembered scan offset (and nearby offsets — rows shift up as
+   * earlier ones are archived) before falling back to full passes.
    */
   async function revealSidebarItem(args) {
     const sessionId = String(args?.sessionId || '');
     if (!/^[a-zA-Z0-9-]{1,128}$/.test(sessionId)) throw Error('会话 id 无效');
-    if (sidebarLink(sessionId)) return { found: true };
+    const done = a => { a.scrollIntoView?.({ block: 'center', inline: 'nearest', behavior: 'instant' }); return a; };
+    let a = sidebarLink(sessionId);
+    if (a) return done(a);
+    const opened = await ensureSidebarOpen();
+    if (!opened.open) throw Error('无法打开侧栏');
+    a = await waitFor(() => sidebarLink(sessionId), '', 600).catch(() => null);
+    if (a) return done(a);
     const scroller = sidebarScroller();
-    if (!scroller) throw Error('侧栏列表未加载');
-    for (let pass = 0; pass < 2; pass++) {
-      scroller.scrollTop = pass === 0 ? 0 : scroller.scrollHeight;
-      const step = Math.max(200, scroller.clientHeight);
-      for (let i = 0; i < 60; i++) {
-        await new Promise(r => setTimeout(r, 150));
-        const link = sidebarLink(sessionId);
-        if (link) {
-          link.scrollIntoView?.({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
-          return { found: true };
-        }
-        const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 4;
-        if (pass === 0) { if (atBottom) break; scroller.scrollTop += step; }
-        else { if (scroller.scrollTop <= 0) break; scroller.scrollTop -= step; }
+    if (!scroller) throw Error('侧栏未找到该对话');
+    const h = Math.max(60, scroller.clientHeight);
+    const pos = Number(args?.pos);
+    if (Number.isFinite(pos) && pos >= 0) {
+      for (const f of [0, -0.5, -1, -1.5, -2, -3, 0.5, 1]) {
+        scroller.scrollTop = Math.max(0, pos + f * h);
+        await sleep(140);
+        if ((a = sidebarLink(sessionId))) return done(a);
       }
     }
-    if (sidebarLink(sessionId)) return { found: true };
+    for (const down of [true, false]) {
+      scroller.scrollTop = down ? 0 : scroller.scrollHeight;
+      for (let i = 0; i < 600; i++) {
+        await sleep(120);
+        if ((a = sidebarLink(sessionId))) return done(a);
+        if (down ? atBottom(scroller) : scroller.scrollTop <= 0) break;
+        scroller.scrollTop += (down ? 1 : -1) * Math.floor(h * 0.75);
+      }
+    }
     throw Error('侧栏未找到该对话');
   }
-  async function sidebarList(args) {
-    // expand defaults true; cleanup opens the sidebar ONCE up front and passes
-    // expand:false on subsequent scans so we don't toggle it every pass.
-    if (args?.expand !== false) expandSidebar();
-    if (!collectSidebar().length) await waitFor(() => collectSidebar().length > 0, '侧栏对话列表未加载', 6000).catch(() => {});
-    await loadAllSidebar();
-    return { items: collectSidebar() };
+
+  // Reveal + archive one arithmetic chat from its sidebar row, without opening it.
+  // Re-checks the title right before archiving: a chat whose title is no longer
+  // bare arithmetic is never archived (defence in depth for the Kotlin planner).
+  async function archiveFromSidebar(args) {
+    const sessionId = String(args?.sessionId || '');
+    const api = globalThis.ArenaConversationRename;
+    if (!api) throw Error('归档模块未加载');
+    if (sessionId === session()) throw Error('不归档当前打开的对话');
+    const a = await revealSidebarItem({ sessionId, pos: args?.pos });
+    if (!isArithmeticTitle(text(a))) throw Error('标题已不是算式，跳过');
+    const r = await api.archive({ sessionId, isCurrent: () => session() !== sessionId, requireCurrentUrl: false, manageSidebar: false });
+    return r || { archived: true, sessionId };
   }
 
-  // Navigate to a saved conversation by clicking its sidebar link (SPA nav keeps
-  // this injected script alive). Required before archive, whose guard demands
-  // being on that conversation's own page.
-  function sidebarLink(sessionId) {
-    return [...document.querySelectorAll('a[data-sidebar="menu-button"][href]')].find(a => {
-      try { const u = new URL(a.href, location.origin); return u.origin === ARENA && sessionFromPath(u.pathname) === sessionId; } catch { return false; }
-    }) || null;
-  }
-  async function openConversation(args) {
-    const sessionId = String(args?.sessionId || '');
-    if (!/^[a-zA-Z0-9-]{1,128}$/.test(sessionId)) throw Error('会话 id 无效');
-    if (session() === sessionId) return { session: sessionId };
-    // On a phone the sidebar Sheet auto-closes after a selection, so between
-    // archives the target link may not be in the DOM. Reopen and wait for it,
-    // retrying a few times (scroll the virtualized list) before giving up.
-    let link = null;
-    for (let attempt = 0; attempt < 3 && !link; attempt++) {
-      expandSidebar();
-      link = await waitFor(() => sidebarLink(sessionId), '', 2500).catch(() => null);
-      if (!link) { await loadAllSidebar(); link = sidebarLink(sessionId); }
-    }
-    if (!link) throw Error('侧栏未找到该对话');
-    link.click();
-    await waitFor(() => session() === sessionId, '切换到该对话超时', 8000);
-    return { session: sessionId };
+  async function sidebarList(args) {
+    // Backwards-compatible alias of sidebarScan.
+    return sidebarScan(args);
   }
 
   async function rename(args) {
     const api = globalThis.ArenaConversationRename;
     if (!api) throw Error('重命名模块未加载');
-    const r = await api.rename({ sessionId: String(args?.sessionId || ''), model: String(args?.title || ''), isCurrent: () => true });
-    return r || { ok: true };
+    const wasOpen = sidebarIsOpen();
+    try {
+      const r = await api.rename({ sessionId: String(args?.sessionId || ''), model: String(args?.title || ''), isCurrent: () => true });
+      return r || { ok: true };
+    } finally {
+      if (!wasOpen && sidebarIsOpen()) openedByProbe = true;
+    }
   }
   async function archive(args) {
     const api = globalThis.ArenaConversationRename;
@@ -377,7 +475,12 @@
     return r || { archived: true };
   }
 
-  const ACTIONS = { precheck, newChat, ensureAgentMode, send, sendToCurrent, sidebarList, collapseSidebar, openConversation, revealSidebarItem, rename, archive };
+  const ACTIONS = {
+    precheck, newChat, ensureAgentMode, send, sendToCurrent,
+    sidebarState, sidebarScan, sidebarList, collapseSidebar, archiveFromSidebar, rename, archive,
+    ensureSidebarOpen: async () => ensureSidebarOpen(),
+    revealSidebarItem: async args => { await revealSidebarItem(args); return { found: true }; },
+  };
 
   async function call(action, argsJson, reqId) {
     let res;
@@ -393,5 +496,5 @@
     try { ArenaProbeBridge.onResult(reqId, JSON.stringify(res)); } catch (_) { }
   }
 
-  globalThis.ArenaProbe = { call, isOwnPrompt };
+  globalThis.ArenaProbe = { call, isOwnPrompt, isArithmeticTitle, normTitle, version: VERSION };
 })();

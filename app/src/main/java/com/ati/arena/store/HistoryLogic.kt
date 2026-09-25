@@ -2,74 +2,212 @@ package com.ati.arena.store
 
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.MessageDigest
 
 /**
- * Pure, Android-free persistence logic for the local conversation→model history
- * and the probe panel preferences. Kept framework-independent so it can be unit
- * tested on the JVM; [Store] is the thin SharedPreferences wrapper around it.
+ * Pure, Android-free persistence logic for the local conversation → model history.
+ * Framework-independent so it can be unit tested on the JVM; [Store] is the thin
+ * SharedPreferences wrapper around it.
  *
- * STRICT WHITELIST — the only things ever persisted are:
- *   - a conversation's resolved model name(s), keyed by sessionId
- *   - probe panel form values (targets text, max rounds, two checkboxes)
- * NEVER tokens, trace payloads, cookies, run ids, or any conversation text.
+ * Stored shape (one object per conversation, oldest evicted beyond [MAX_SESSIONS]):
+ * ```
+ * { "<sessionId>": { "models": ["latest", "models"],
+ *                    "runs": [ {"k": "<runKey>", "n": 1, "m": ["model"]}, … ],
+ *                    "updatedAt": <ms> } }
+ * ```
+ *
+ * STRICT WHITELIST — the only things ever persisted are a conversation's resolved
+ * model name(s), per-turn numbers, and an opaque one-way [runKey] per turn (so a
+ * replayed turn can be recognised). NEVER tokens, raw run ids, trace payloads,
+ * cookies, or any conversation text.
  */
 object HistoryLogic {
+
+    const val MAX_SESSIONS = 150
+    const val MAX_RUNS_PER_SESSION = 50
+    const val MAX_MODELS = 8
+    const val MAX_MODEL_LENGTH = 200
+    private const val MAX_TURN_NUMBER = 1_000_000
 
     /** Arena conversation path is /agent/{sessionId}; the id charset is bounded. */
     private val SESSION_ID = Regex("^[a-zA-Z0-9-]{1,128}$")
     private val CONVERSATION_PATH = Regex("^/agent/([a-zA-Z0-9-]{1,128})/?$")
+    private val RUN_KEY = Regex("^[0-9a-f]{16}$")
+
+    private const val F_MODELS = "models"
+    private const val F_RUNS = "runs"
+    private const val F_UPDATED = "updatedAt"
+    private const val R_KEY = "k"
+    private const val R_NUMBER = "n"
+    private const val R_MODELS = "m"
+
+    /** One persisted turn. */
+    data class RunRecord(val key: String, val number: Int, val models: List<String>)
 
     fun isValidSessionId(id: String?): Boolean = id != null && SESSION_ID.matches(id)
+
+    fun isValidRunKey(key: String?): Boolean = key != null && RUN_KEY.matches(key)
 
     /** Extract the sessionId from a conversation URL path, or null if it isn't one. */
     fun sessionFromPath(path: String?): String? =
         CONVERSATION_PATH.find(path ?: "")?.groupValues?.getOrNull(1)
 
     /**
+     * Opaque, non-reversible key for a run id (first 16 hex chars of SHA-256).
+     * Lets a replayed turn be matched to its stored model without ever persisting
+     * the raw run id.
+     */
+    fun runKey(runId: String): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(runId.toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { "%02x".format(it) }.take(16)
+    }
+
+    /**
      * Sanitize model names to the whitelist: trimmed, non-blank, deduped, length
      * capped, and at most [maxModels] of them. Rejects control characters.
      */
-    fun sanitizeModels(models: List<String>, maxModels: Int = 8): List<String> =
+    fun sanitizeModels(models: List<String>, maxModels: Int = MAX_MODELS): List<String> =
         models.map { it.trim() }
-            .filter { it.isNotEmpty() && it.length <= 200 && !it.any { c -> c.code < 0x20 || c.code == 0x7f } }
+            .filter { it.isNotEmpty() && it.length <= MAX_MODEL_LENGTH && it.none { c -> c.code < 0x20 || c.code == 0x7f } }
             .distinct()
             .take(maxModels)
 
+    /** Parse stored JSON leniently: corrupt or missing data yields an empty root. */
+    fun parseRoot(json: String?): JSONObject =
+        runCatching { JSONObject(json ?: "{}") }.getOrElse { JSONObject() }
+
+    // ---- in-place operations on a parsed root (used by Store) ----
+
     /**
-     * Merge one conversation record into the stored history JSON (an object of
-     * sessionId -> {"models":[...],"updatedAt":<ms>}), bumping updatedAt and
-     * capping total entries by evicting the oldest. Returns the new JSON string.
-     * A no-op (empty models, bad id, unchanged models) returns the input unchanged.
+     * Set a conversation's current model(s). Returns true when the root changed.
+     * A no-op (bad id, empty models, unchanged models) returns false.
+     */
+    fun putModels(
+        root: JSONObject,
+        sessionId: String,
+        models: List<String>,
+        maxEntries: Int = MAX_SESSIONS,
+        nowMs: Long = System.currentTimeMillis(),
+    ): Boolean {
+        if (!isValidSessionId(sessionId)) return false
+        val clean = sanitizeModels(models)
+        if (clean.isEmpty()) return false
+        val entry = root.optJSONObject(sessionId) ?: JSONObject()
+        if (stringList(entry.optJSONArray(F_MODELS)) == clean) return false
+        entry.put(F_MODELS, JSONArray(clean)).put(F_UPDATED, nowMs)
+        root.put(sessionId, entry)
+        evictOldest(root, maxEntries)
+        return true
+    }
+
+    /**
+     * Upsert one observed turn. [models] may be empty (turn seen, model unknown yet).
+     * An existing turn keeps its number; its models are replaced only by a non-empty
+     * list. The conversation's "models" always follow its highest-numbered resolved
+     * turn, so a late-resolving older turn never overwrites the current model.
+     * Returns true when the root changed.
+     */
+    fun putRun(
+        root: JSONObject,
+        sessionId: String,
+        key: String,
+        number: Int,
+        models: List<String>,
+        maxEntries: Int = MAX_SESSIONS,
+        maxRuns: Int = MAX_RUNS_PER_SESSION,
+        nowMs: Long = System.currentTimeMillis(),
+    ): Boolean {
+        if (!isValidSessionId(sessionId) || !isValidRunKey(key) || number !in 1..MAX_TURN_NUMBER) return false
+        val clean = sanitizeModels(models)
+        val entry = root.optJSONObject(sessionId) ?: JSONObject()
+        val runs = readRuns(entry).toMutableList()
+        val index = runs.indexOfFirst { it.key == key }
+        if (index >= 0) {
+            val existing = runs[index]
+            if (clean.isEmpty() || existing.models == clean) return false
+            runs[index] = existing.copy(models = clean)
+        } else {
+            runs.add(RunRecord(key, number, clean))
+        }
+        val kept = runs.sortedBy { it.number }.takeLast(maxRuns.coerceAtLeast(1))
+        entry.put(F_RUNS, JSONArray().apply { kept.forEach { put(runJson(it)) } })
+        kept.filter { it.models.isNotEmpty() }.maxByOrNull { it.number }?.let {
+            entry.put(F_MODELS, JSONArray(it.models))
+        }
+        entry.put(F_UPDATED, nowMs)
+        root.put(sessionId, entry)
+        evictOldest(root, maxEntries)
+        return true
+    }
+
+    /** Resolved model name(s) for a session, or empty if unknown. */
+    fun modelsIn(root: JSONObject, sessionId: String): List<String> {
+        if (!isValidSessionId(sessionId)) return emptyList()
+        return stringList(root.optJSONObject(sessionId)?.optJSONArray(F_MODELS))
+    }
+
+    /** Persisted turns of a session, ordered by turn number. */
+    fun runsIn(root: JSONObject, sessionId: String): List<RunRecord> {
+        if (!isValidSessionId(sessionId)) return emptyList()
+        val entry = root.optJSONObject(sessionId) ?: return emptyList()
+        return readRuns(entry).sortedBy { it.number }
+    }
+
+    // ---- string wrappers (stable API used by tests and simple callers) ----
+
+    /**
+     * Merge one conversation's current models into the stored history JSON.
+     * Returns the new JSON string; a no-op returns the input unchanged.
      */
     fun mergeRecord(
         existingJson: String?,
         sessionId: String,
         models: List<String>,
-        maxEntries: Int = 200,
+        maxEntries: Int = MAX_SESSIONS,
         nowMs: Long = System.currentTimeMillis(),
     ): String {
-        if (!isValidSessionId(sessionId)) return existingJson ?: "{}"
-        val clean = sanitizeModels(models)
-        if (clean.isEmpty()) return existingJson ?: "{}"
-
-        val root = runCatching { JSONObject(existingJson ?: "{}") }.getOrElse { JSONObject() }
-
-        // Skip a write when the same models are already stored (avoid churn).
-        val prev = root.optJSONObject(sessionId)?.optJSONArray("models")
-        if (prev != null && jsonArrayToList(prev) == clean) return root.toString()
-
-        root.put(sessionId, JSONObject().put("models", JSONArray(clean)).put("updatedAt", nowMs))
-        evictOldest(root, maxEntries)
-        return root.toString()
+        val root = parseRoot(existingJson)
+        return if (putModels(root, sessionId, models, maxEntries, nowMs)) root.toString() else existingJson ?: "{}"
     }
 
-    /** Resolved model name(s) for a session, or empty if unknown. */
-    fun modelsFor(json: String?, sessionId: String): List<String> {
-        if (!isValidSessionId(sessionId)) return emptyList()
-        val root = runCatching { JSONObject(json ?: "{}") }.getOrNull() ?: return emptyList()
-        val arr = root.optJSONObject(sessionId)?.optJSONArray("models") ?: return emptyList()
-        return jsonArrayToList(arr)
+    /** String form of [putRun]; a no-op returns the input unchanged. */
+    fun mergeRun(
+        existingJson: String?,
+        sessionId: String,
+        key: String,
+        number: Int,
+        models: List<String>,
+        maxEntries: Int = MAX_SESSIONS,
+        maxRuns: Int = MAX_RUNS_PER_SESSION,
+        nowMs: Long = System.currentTimeMillis(),
+    ): String {
+        val root = parseRoot(existingJson)
+        return if (putRun(root, sessionId, key, number, models, maxEntries, maxRuns, nowMs)) root.toString()
+        else existingJson ?: "{}"
     }
+
+    fun modelsFor(json: String?, sessionId: String): List<String> = modelsIn(parseRoot(json), sessionId)
+
+    fun runsFor(json: String?, sessionId: String): List<RunRecord> = runsIn(parseRoot(json), sessionId)
+
+    // ---- internals ----
+
+    private fun readRuns(entry: JSONObject): List<RunRecord> {
+        val arr = entry.optJSONArray(F_RUNS) ?: return emptyList()
+        val out = ArrayList<RunRecord>(arr.length())
+        val seen = HashSet<String>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val key = o.optString(R_KEY)
+            val number = o.optInt(R_NUMBER, 0)
+            if (!isValidRunKey(key) || number !in 1..MAX_TURN_NUMBER || !seen.add(key)) continue
+            out.add(RunRecord(key, number, sanitizeModels(stringList(o.optJSONArray(R_MODELS)))))
+        }
+        return out
+    }
+
+    private fun runJson(r: RunRecord): JSONObject =
+        JSONObject().put(R_KEY, r.key).put(R_NUMBER, r.number).put(R_MODELS, JSONArray(r.models))
 
     private fun evictOldest(root: JSONObject, maxEntries: Int) {
         if (maxEntries <= 0) return
@@ -79,7 +217,7 @@ object HistoryLogic {
             val keys = root.keys()
             while (keys.hasNext()) {
                 val k = keys.next()
-                val ts = root.optJSONObject(k)?.optLong("updatedAt", 0L) ?: 0L
+                val ts = root.optJSONObject(k)?.optLong(F_UPDATED, 0L) ?: 0L
                 if (ts < oldestTs) { oldestTs = ts; oldestKey = k }
             }
             if (oldestKey == null) break
@@ -87,6 +225,6 @@ object HistoryLogic {
         }
     }
 
-    private fun jsonArrayToList(arr: JSONArray): List<String> =
-        (0 until arr.length()).mapNotNull { arr.opt(it) as? String }
+    private fun stringList(arr: JSONArray?): List<String> =
+        if (arr == null) emptyList() else (0 until arr.length()).mapNotNull { arr.opt(it) as? String }
 }

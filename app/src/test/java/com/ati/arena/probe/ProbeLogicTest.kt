@@ -214,4 +214,133 @@ class ProbeLogicTest {
         assertNull(ProbeLogic.compileTarget(""))
         assertNull(ProbeLogic.compileTarget("  "))
     }
+    // ---- normalizeTitle / isArithmeticTitle robustness (missed-cleanup fixes) ----
+
+    @Test fun normalizeTitleStripsInvisibleCharacters() {
+        assertEquals("1+1=", ProbeLogic.normalizeTitle("\u200B1+1=\u200D"))
+        assertEquals("1+1=", ProbeLogic.normalizeTitle("\u200E1+1=\u200F"))
+        assertEquals("1+1=", ProbeLogic.normalizeTitle("\uFEFF1\u2060+1\u00AD="))
+        assertEquals("1+1=", ProbeLogic.normalizeTitle("\u202A1+1=\u202C"))
+    }
+
+    @Test fun normalizeTitleUnifiesSpacesAndFullwidth() {
+        assertEquals("12 + 4 =", ProbeLogic.normalizeTitle("12\u00A0+\u202F4\u2009="))
+        assertEquals("12+34=", ProbeLogic.normalizeTitle("\uFF11\uFF12\uFF0B\uFF13\uFF14\uFF1D"))
+        assertEquals("1+1=", ProbeLogic.normalizeTitle("  1+1=\n"))
+    }
+
+    @Test fun normalizeTitleUnifiesOperatorLookalikes() {
+        assertEquals("9-3=", ProbeLogic.normalizeTitle("9\u22123="))
+        assertEquals("9-3=", ProbeLogic.normalizeTitle("9\u20133="))
+        assertEquals("9×3=", ProbeLogic.normalizeTitle("9\u27153="))
+        assertEquals("9×3=", ProbeLogic.normalizeTitle("9\u22C53="))
+        assertEquals("9×3=", ProbeLogic.normalizeTitle("9\u22173="))
+        assertEquals("9÷3=", ProbeLogic.normalizeTitle("9\u22153="))
+    }
+
+    @Test fun arithmeticTitlesThatUsedToSlipThroughNowMatch() {
+        for (t in listOf(
+            "\u200B473×82=", "473\u00A0×\u00A082\u00A0=", "\uFF14\uFF17\uFF13\uFF0B\uFF18\uFF12\uFF1D",
+            "57\u2212906=", "57\u2013906=", "8\u27156=", "8\u22C56=", "\u200E12 / 4 =",
+        )) assertTrue(t, ProbeLogic.isArithmeticTitle(t))
+    }
+
+    @Test fun normalizationDoesNotWidenWhatCountsAsArithmetic() {
+        for (t in listOf("1+1=2", "\u200B1+1=2", "12345+1=", "1+1", "x+1=", "Math: 1+1=", "1+1=?")) {
+            assertFalse(t, ProbeLogic.isArithmeticTitle(t))
+        }
+    }
+
+    // ---- planCleanup ----
+
+    private fun item(id: String, title: String) = ProbeLogic.SidebarItem(id, title)
+
+    @Test fun planSeparatesTheOpenChatFromTheRest() {
+        val sidebar = listOf(item("a", "1+1="), item("b", "Notes"), item("c", "2×3="), item("d", "5-1="))
+        val plan = ProbeLogic.planCleanup(sidebar, currentSessionId = "c")
+        assertEquals(listOf("a", "d"), plan.others.map { it.sessionId })
+        assertEquals("c", plan.current?.sessionId)
+        assertEquals(3, plan.size)
+    }
+
+    @Test fun planIgnoresANonArithmeticOpenChat() {
+        val plan = ProbeLogic.planCleanup(listOf(item("a", "1+1="), item("b", "Notes")), currentSessionId = "b")
+        assertNull(plan.current)
+        assertEquals(listOf("a"), plan.others.map { it.sessionId })
+    }
+
+    @Test fun planHonoursExclusionsAndEmptiness() {
+        val plan = ProbeLogic.planCleanup(listOf(item("a", "1+1="), item("b", "2+2=")), null, exclude = setOf("a"))
+        assertEquals(listOf("b"), plan.others.map { it.sessionId })
+        assertTrue(ProbeLogic.planCleanup(listOf(item("x", "Hello")), "x").isEmpty)
+    }
+
+    @Test fun candidatesKeepScanPosition() {
+        val c = ProbeLogic.arithmeticCleanupCandidates(listOf(ProbeLogic.SidebarItem("a", "1+1=", position = 480)))
+        assertEquals(480, c.single().position)
+    }
+
+    // ---- hit titles: prefix + suffix ----
+
+    @Test fun sanitizePrefixCleansInput() {
+        assertEquals("[探针] ", ProbeLogic.sanitizePrefix("  [探针]   "))
+        assertEquals("ab", ProbeLogic.sanitizePrefix("a\u0000\u200Bb"))
+        assertEquals("a b", ProbeLogic.sanitizePrefix("a\n\tb"))
+        assertEquals(ProbeLogic.MAX_PREFIX_LENGTH, ProbeLogic.sanitizePrefix("x".repeat(99)).length)
+        assertEquals("", ProbeLogic.sanitizePrefix(null))
+    }
+
+    @Test fun hitTitleUsesPrefixVerbatim() {
+        assertEquals("claude-opus-5-001", ProbeLogic.hitTitle("", "claude-opus-5", "001"))
+        assertEquals("[探针] claude-opus-5-001", ProbeLogic.hitTitle("[探针] ", "claude-opus-5", "001"))
+        assertEquals("P_gpt-6-012", ProbeLogic.hitTitle("P_", "gpt-6", "012"))
+    }
+
+    @Test fun hitTitleAlwaysFitsAndKeepsSuffix() {
+        val t = ProbeLogic.hitTitle("[prefix] ", "m".repeat(150), "001")
+        assertEquals(ProbeLogic.MAX_TITLE_LENGTH, t.length)
+        assertTrue(t.startsWith("[prefix] m"))
+        assertTrue(t.endsWith("-001"))
+        val tiny = ProbeLogic.hitTitle("abcdef", "model", "001", maxLength = 8)
+        assertTrue(tiny.length <= 8)
+        assertTrue(tiny.endsWith("-001"))
+    }
+
+    @Test fun suffixCountsPerPrefixAndModel() {
+        var counters: Map<String, Int> = emptyMap()
+        val (a1, c1) = ProbeLogic.nextSuffixFor("[A] ", "gpt-6", counters); counters = c1
+        val (a2, c2) = ProbeLogic.nextSuffixFor("[A] ", "gpt-6", counters); counters = c2
+        val (b1, c3) = ProbeLogic.nextSuffixFor("[B] ", "gpt-6", counters); counters = c3
+        val (n1, _) = ProbeLogic.nextSuffixFor("", "gpt-6", counters)
+        assertEquals(listOf("001", "002", "001", "001"), listOf(a1, a2, b1, n1))
+    }
+
+    @Test fun noPrefixKeepsLegacyCounterKey() {
+        val legacy = mapOf(ProbeLogic.normalize("claude-opus-5") to 4)
+        assertEquals("005", ProbeLogic.nextSuffixFor("", "claude-opus-5", legacy).first)
+        assertEquals("005", ProbeLogic.nextSuffixFor("   ", "claude-opus-5", legacy).first)
+    }
+
+    @Test fun countersRoundTripAndTolerateCorruption() {
+        val map = linkedMapOf("gpt6" to 3, "p:[a]|gpt6" to 1)
+        assertEquals(map, ProbeLogic.countersFromJson(ProbeLogic.countersToJson(map)))
+        assertTrue(ProbeLogic.countersFromJson("not json").isEmpty())
+        assertTrue(ProbeLogic.countersFromJson(null).isEmpty())
+        assertEquals(mapOf("ok" to 2), ProbeLogic.countersFromJson("""{"ok":2,"neg":-1,"zero":0}"""))
+    }
+
+    @Test fun countersAreCapped() {
+        var counters: Map<String, Int> = emptyMap()
+        for (i in 0..ProbeLogic.MAX_COUNTERS + 5) counters = ProbeLogic.nextSuffixFor("", "model$i", counters).second
+        assertEquals(ProbeLogic.MAX_COUNTERS, counters.size)
+        assertTrue(counters.containsKey(ProbeLogic.normalize("model${ProbeLogic.MAX_COUNTERS + 5}")))
+    }
+
+    @Test fun parseRoundsClampsAndDefaults() {
+        assertEquals(ProbeLogic.DEFAULT_ROUNDS, ProbeLogic.parseRounds(""))
+        assertEquals(ProbeLogic.DEFAULT_ROUNDS, ProbeLogic.parseRounds("abc"))
+        assertEquals(ProbeLogic.MIN_ROUNDS, ProbeLogic.parseRounds("0"))
+        assertEquals(ProbeLogic.MAX_ROUNDS, ProbeLogic.parseRounds("5000"))
+        assertEquals(12, ProbeLogic.parseRounds(" 12 "))
+    }
 }

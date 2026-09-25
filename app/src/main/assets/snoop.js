@@ -1,11 +1,18 @@
 /* Page-world SSE tap for the Android WebView shell.
    Same hooking strategy as the extension's snoop.js, but reports to the native
    bridge (window.ArenaTrace) instead of window.postMessage. Never captures
-   conversation text — only the public run token. */
+   conversation text — only the public run token.
+
+   Each event carries the page path AT CAPTURE TIME so the native side can drop
+   tokens from a conversation the user already left (a late/old stream would
+   otherwise be attributed to the chat now on screen). */
 (() => {
   if (window.__ATI_SNOOP__) return;
   window.__ATI_SNOOP__ = true;
   const TOKEN_KEY = /^public[-_]access[-_]?token$/i;
+  const MAX_SEEN = 256;
+  const seen = new Set();
+
   function sessionFromUrl(url) {
     try {
       const u = new URL(url, location.href);
@@ -15,9 +22,22 @@
         || null;
     } catch { return null; }
   }
+  function urlOf(input) {
+    if (typeof input === 'string') return input;
+    if (input instanceof URL) return input.href;
+    return input?.url;
+  }
   function emit(token, sessionId) {
     if (typeof token !== 'string' || token.length > 16384 || token.split('.').length !== 3) return;
-    try { window.ArenaTrace && ArenaTrace.onSnoop(JSON.stringify({sessionId, token})); } catch (e) {}
+    const page = location.pathname;
+    // The stream repeats a run's token on many records; forward each
+    // (page, session, token) once. The page is part of the key so a token first
+    // seen on another chat is re-sent once the user opens its own chat.
+    const key = page + '|' + sessionId + '|' + token;
+    if (seen.has(key)) return;
+    seen.add(key);
+    if (seen.size > MAX_SEEN) seen.delete(seen.values().next().value);
+    try { window.ArenaTrace && ArenaTrace.onSnoop(JSON.stringify({ sessionId, token, page })); } catch (e) {}
   }
   function takeTokens(obj, sessionId) {
     const records = Array.isArray(obj?.records) ? obj.records : obj ? [obj] : [];
@@ -44,9 +64,9 @@
     const decoder = new TextDecoder();
     let buf = '';
     while (true) {
-      const {done, value} = await reader.read();
+      const { done, value } = await reader.read();
       if (done) break;
-      buf += decoder.decode(value, {stream: true});
+      buf += decoder.decode(value, { stream: true });
       if (buf.length > 2 * 1024 * 1024) buf = buf.slice(-65536);
       const parts = buf.split(/\r?\n\r?\n/);
       buf = parts.pop() || '';
@@ -54,22 +74,27 @@
     }
   }
   const origFetch = window.fetch;
-  window.fetch = async function (...args) {
-    const response = await origFetch.apply(this, args);
-    const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
-    const sessionId = sessionFromUrl(url);
-    if (!sessionId || !response.ok || !response.body) return response;
-    try {
-      const [page, probe] = response.body.tee();
-      tapBody(probe, sessionId).catch(() => {});
-      return new Response(page, {headers: response.headers, status: response.status, statusText: response.statusText});
-    } catch { return response; }
-  };
+  if (typeof origFetch === 'function') {
+    window.fetch = async function (...args) {
+      const response = await origFetch.apply(this, args);
+      const sessionId = sessionFromUrl(urlOf(args[0]));
+      if (!sessionId || !response.ok || !response.body) return response;
+      try {
+        const [page, probe] = response.body.tee();
+        tapBody(probe, sessionId).catch(() => {});
+        const copy = new Response(page, { headers: response.headers, status: response.status, statusText: response.statusText });
+        // Keep the properties a Response built from a stream would otherwise lose.
+        try { Object.defineProperty(copy, 'url', { value: response.url }); } catch (_) {}
+        try { Object.defineProperty(copy, 'redirected', { value: response.redirected }); } catch (_) {}
+        return copy;
+      } catch { return response; }
+    };
+  }
   const OrigES = window.EventSource;
   if (typeof OrigES === 'function') {
     window.EventSource = function (url, config) {
       const es = new OrigES(url, config);
-      const sessionId = sessionFromUrl(url);
+      const sessionId = sessionFromUrl(urlOf(url));
       if (sessionId) es.addEventListener('message', ev => { if (typeof ev.data === 'string') scanSse('data: ' + ev.data + '\n\n', sessionId); });
       return es;
     };

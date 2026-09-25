@@ -3,7 +3,13 @@ name: Android Build
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -24,26 +30,34 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      # Output is also written to $RUNNER_TEMP/*.log so a failure can be surfaced
+      # as check-run annotations (readable without downloading the raw logs).
       - name: Run JVM unit tests
-        run: gradle testDebugUnitTest --no-daemon --stacktrace
+        shell: bash
+        run: gradle testDebugUnitTest --no-daemon --stacktrace 2>&1 | tee "$RUNNER_TEMP/unit-tests.log"
 
       - name: Build debug APK
-        run: gradle assembleDebug --no-daemon --stacktrace
+        shell: bash
+        run: gradle assembleDebug --no-daemon --stacktrace 2>&1 | tee "$RUNNER_TEMP/assemble-debug.log"
 
       - name: Decode release keystore
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         run: echo "${{ secrets.ARENA_KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/arena-release.keystore"
 
       # Signed with the long-lived keystore from Secrets, so every CI build can
       # be installed as an in-place upgrade over previous CI builds.
       - name: Build signed release APK
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        shell: bash
         env:
           ARENA_KEYSTORE: ${{ runner.temp }}/arena-release.keystore
           ARENA_KEYSTORE_PASSWORD: ${{ secrets.ARENA_KEYSTORE_PASSWORD }}
           ARENA_KEY_ALIAS: ${{ secrets.ARENA_KEY_ALIAS }}
           ARENA_KEY_PASSWORD: ${{ secrets.ARENA_KEY_PASSWORD }}
-        run: gradle assembleRelease --no-daemon --stacktrace
+        run: gradle assembleRelease --no-daemon --stacktrace 2>&1 | tee "$RUNNER_TEMP/assemble-release.log"
 
       - name: Upload signed release APK
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/upload-artifact@v4
         with:
           name: arena-trace-release-apk
@@ -56,3 +70,47 @@ jobs:
           name: arena-trace-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      # Compiler errors, Gradle failure summaries and failed unit tests become
+      # ::error annotations on the check run.
+      - name: Annotate failures
+        if: failure()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import glob, os, re
+          import xml.etree.ElementTree as ET
+
+          def esc(s):
+              return s.replace('%', '%25').replace('\r', '').replace('\n', '%0A')
+
+          def emit(title, lines):
+              for i in range(0, min(len(lines), 160), 40):
+                  print(f"::error title={title}::" + esc("\n".join(lines[i:i + 40])))
+
+          tmp = os.environ.get('RUNNER_TEMP', '.')
+          for path in sorted(glob.glob(os.path.join(tmp, '*.log'))):
+              lines = open(path, errors='replace').read().splitlines()
+              hits, grab = [], False
+              for line in lines:
+                  if line.startswith('* What went wrong'):
+                      grab = True
+                  elif grab and (line.startswith('* Try') or line.startswith('* Exception')):
+                      grab = False
+                  if grab or re.match(r'^(e: |ERROR:|FAILURE:)', line) or ' error: ' in line:
+                      hits.append(line[:500])
+              if hits:
+                  emit(os.path.basename(path), hits)
+
+          failed = []
+          for path in glob.glob('app/build/test-results/**/*.xml', recursive=True):
+              for case in ET.parse(path).getroot().iter('testcase'):
+                  for tag in ('failure', 'error'):
+                      el = case.find(tag)
+                      if el is not None:
+                          msg = (el.get('message') or (el.text or '').strip().splitlines()[0:1] or [''])
+                          msg = msg if isinstance(msg, str) else msg[0]
+                          failed.append(f"{case.get('classname')}.{case.get('name')}: {msg[:400]}")
+          if failed:
+              emit(f"{len(failed)} unit test(s) failed", failed)
+          PY

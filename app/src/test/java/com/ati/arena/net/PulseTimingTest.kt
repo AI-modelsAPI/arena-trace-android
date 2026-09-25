@@ -68,4 +68,24 @@ class PulseTimingTest {
         val anchor = now + 10 * hour
         assertEquals(anchor, PulseTiming.anchorReset(anchor, 0L, now))
     }
+    // ---- Retry-After ----
+
+    @Test fun retryAfterDeltaSeconds() {
+        assertEquals(30_000L, PulseTiming.retryAfterMs("30", 0))
+        assertEquals(PulseTiming.MAX_RETRY_AFTER_MS, PulseTiming.retryAfterMs("99999", 0))
+        assertEquals(1_000L, PulseTiming.retryAfterMs("0", 0))
+    }
+
+    @Test fun retryAfterHttpDate() {
+        val now = java.time.ZonedDateTime.parse("2026-09-25T08:00:00Z").toInstant().toEpochMilli()
+        assertEquals(90_000L, PulseTiming.retryAfterMs("Fri, 25 Sep 2026 08:01:30 GMT", now))
+        // A date in the past still waits the minimum.
+        assertEquals(1_000L, PulseTiming.retryAfterMs("Fri, 25 Sep 2026 07:00:00 GMT", now))
+    }
+
+    @Test fun retryAfterFallsBackOnGarbage() {
+        assertEquals(PulseTiming.DEFAULT_RETRY_AFTER_MS, PulseTiming.retryAfterMs(null, 0))
+        assertEquals(PulseTiming.DEFAULT_RETRY_AFTER_MS, PulseTiming.retryAfterMs("", 0))
+        assertEquals(PulseTiming.DEFAULT_RETRY_AFTER_MS, PulseTiming.retryAfterMs("soon", 0))
+    }
 }

@@ -2,8 +2,9 @@ package com.ati.arena
 
 import android.annotation.SuppressLint
 import android.content.res.ColorStateList
-import android.graphics.Color
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.MotionEvent
 import android.view.View
 import android.webkit.CookieManager
@@ -16,7 +17,9 @@ import android.widget.ImageButton
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.ati.arena.bridge.ArenaBridge
 import com.ati.arena.bridge.ProbeBridge
 import com.ati.arena.net.PulseClient
@@ -25,18 +28,18 @@ import com.ati.arena.net.TraceClient
 import com.ati.arena.net.WarmUp
 import com.ati.arena.probe.ProbeController
 import com.ati.arena.probe.ProbeLogic
-import com.ati.arena.probe.TurnTracker
+import com.ati.arena.session.SessionRouting
+import com.ati.arena.session.TraceCoordinator
+import com.ati.arena.session.TurnFormat
+import com.ati.arena.session.TurnIntake
 import com.ati.arena.store.HistoryLogic
 import com.ati.arena.store.Store
 import com.ati.arena.ui.FloatingBallView
-import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import kotlin.math.abs
 import kotlin.math.hypot
 
@@ -52,8 +55,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var hudPulseBar: ProgressBar
     private lateinit var hudStatus: TextView
 
-    private val traceClient = TraceClient()
-    private var traceJob: Job? = null
     private var pulse: PulseClient.Pulse? = null
     private var pulseError = ""
     private var lastPulseFetch = 0L
@@ -65,26 +66,31 @@ class MainActivity : AppCompatActivity() {
     // status (cleanup progress) is being shown there instead.
     private var ballBusy = false
     private var lastCookieSig = ""
-    private var currentModel = ""
-    // Dedup guard: the SSE tap can surface the same run token repeatedly. Pulling
-    // the trace once per token (not once per event) avoids redundant Trigger.dev
-    // requests that otherwise pile up and risk 429s.
-    private var lastToken = ""
+    // Releases a transient ball status (probe/cleanup/quick-send); one instance so
+    // overlapping flashes never release each other early.
+    private val releaseBall = Runnable { ballBusy = false; refreshModelDisplay() }
 
-    // Per-turn tracking for the CURRENT conversation (turn numbers, first model,
-    // routed flag, HUD history). Conversation switches reset it — authoritatively
-    // at token time inside TurnTracker, best-effort via navigation events.
-    private val turns = TurnTracker()
-
-    // sessionId -> resolved model name(s), populated by the snoop→trace pipeline.
-    // The auto-probe reads this to associate a probe round with its model.
-    private val sessionModels = ConcurrentHashMap<String, String>()
     private lateinit var probe: ProbeController
     private lateinit var store: Store
-    private var lastSessionId = ""
-    // Guards restoreModelForSession so it fires once per session change (SPA nav
-    // can call the URL-changed handler repeatedly for the same URL).
-    private var lastRestoredSession = ""
+    // Token → turn → trace pipeline. Every conversation has its own turn log; the
+    // HUD always renders the log of the conversation on screen (displaySession).
+    private lateinit var coordinator: TraceCoordinator
+    private val intake: TurnIntake get() = coordinator.intake
+
+    // Page state (main thread). currentPath is the last path reported by the
+    // WebView; displaySession is the conversation whose turns the HUD shows
+    // ("" = new-chat composer before its conversation exists, or none).
+    private var currentPath = ""
+    private var displaySession = ""
+    private var currentModel = ""
+
+    private val pageScripts: List<String> by lazy {
+        // Order matters: conversation-rename exposes ArenaConversationRename, which
+        // probe.js's rename/archive actions call; inject it before probe.js.
+        listOf("snoop.js", "conversation-rename.js", "probe.js").map { asset ->
+            assets.open(asset).bufferedReader().use { it.readText() }
+        }
+    }
 
     // Warm-up: poll for cf_clearance / non-challenge instead of a fixed timer.
     private var advancedToAgent = false
@@ -103,13 +109,19 @@ class MainActivity : AppCompatActivity() {
         hudPulseBar = findViewById(R.id.hud_pulse_bar)
         hudStatus = findViewById(R.id.hud_status)
         store = Store(this)
+        coordinator = TraceCoordinator(
+            scope = lifecycleScope,
+            intake = TurnIntake(store),
+            traceClient = TraceClient(),
+            onChanged = ::onTurnsChanged,
+        )
 
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
 
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
-        webView.addJavascriptInterface(ArenaBridge(::onSnoopEvent), "ArenaTrace")
+        webView.addJavascriptInterface(ArenaBridge(::onSnoopPayload), "ArenaTrace")
         webView.addJavascriptInterface(
             ProbeBridge(
                 resultHandler = { reqId, json -> probe.deliverResult(reqId, json) },
@@ -120,11 +132,19 @@ class MainActivity : AppCompatActivity() {
         probe = ProbeController(
             webView = webView,
             scope = lifecycleScope,
-            modelForSession = { sid -> sessionModels[sid] },
-            onProgress = { line -> appendProbeLog(line) },
-            onFinished = { summary -> appendProbeLog(summary); setProbeRunningUi(false) },
-            onCleanupState = { archived, active -> showCleanupOnBall(archived, active) },
-            onProbeState = { round, maxRounds, hits, active -> showProbeOnBall(round, maxRounds, hits, active) },
+            modelsForSession = { sid -> intake.modelsFor(sid) },
+            counters = object : ProbeController.SuffixCounters {
+                override fun load() = store.loadSuffixCounters()
+                override fun save(counters: Map<String, Int>) = store.saveSuffixCounters(counters)
+            },
+            ensureScripts = { injectPageScripts(webView) },
+            listener = object : ProbeController.Listener {
+                override fun onProgress(message: String) = appendProbeLog(message)
+                override fun onFinished(summary: String) { appendProbeLog(summary); setProbeRunningUi(false) }
+                override fun onProbeState(round: Int, maxRounds: Int, hits: Int, active: Boolean) =
+                    showProbeOnBall(round, maxRounds, hits, active)
+                override fun onCleanupState(archived: Int, active: Boolean) = showCleanupOnBall(archived, active)
+            },
         )
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView, url: String) {
@@ -193,6 +213,8 @@ class MainActivity : AppCompatActivity() {
         val rounds = findViewById<EditText>(R.id.probe_rounds)
         val findAll = findViewById<CheckBox>(R.id.probe_find_all)
         val rename = findViewById<CheckBox>(R.id.probe_rename)
+        val prefix = findViewById<EditText>(R.id.probe_prefix)
+        val preview = findViewById<TextView>(R.id.probe_prefix_preview)
         val quick = findViewById<EditText>(R.id.quick_text)
 
         // Restore the last-used panel values.
@@ -201,20 +223,32 @@ class MainActivity : AppCompatActivity() {
             rounds.setText(it.maxRounds.toString())
             findAll.isChecked = it.findAll
             rename.isChecked = it.autoRename
+            prefix.setText(it.renamePrefix)
             quick.setText(it.quickText)
         }
 
         fun persistPanel() = store.savePanelPrefs(
             Store.PanelPrefs(
                 targets = targets.text.toString(),
-                maxRounds = rounds.text.toString().toIntOrNull()?.coerceIn(1, 100) ?: 5,
+                maxRounds = ProbeLogic.parseRounds(rounds.text.toString()),
                 findAll = findAll.isChecked,
                 autoRename = rename.isChecked,
+                renamePrefix = ProbeLogic.sanitizePrefix(prefix.text.toString()),
                 quickText = quick.text.toString(),
             )
         )
+        fun updatePrefixPreview() {
+            val p = ProbeLogic.sanitizePrefix(prefix.text.toString())
+            val sample = "claude-opus-5"
+            val suffix = ProbeLogic.nextSuffixFor(p, sample, store.loadSuffixCounters()).first
+            preview.text = "命中后的会话名称示例：" + ProbeLogic.hitTitle(p, sample, suffix)
+            preview.alpha = if (rename.isChecked) 1f else 0.4f
+            prefix.isEnabled = rename.isChecked
+        }
+        updatePrefixPreview()
+        prefix.addTextChangedListener(afterTextChanged { updatePrefixPreview(); persistPanel() })
         findAll.setOnCheckedChangeListener { _, _ -> persistPanel() }
-        rename.setOnCheckedChangeListener { _, _ -> persistPanel() }
+        rename.setOnCheckedChangeListener { _, _ -> updatePrefixPreview(); persistPanel() }
 
         findViewById<Button>(R.id.probe_start).setOnClickListener {
             persistPanel()
@@ -228,7 +262,7 @@ class MainActivity : AppCompatActivity() {
             // Collapse to the ball so the sweep's archive dialogs aren't blocked by
             // our own panel, and show the running count in the ball center.
             collapseToBall()
-            probe.cleanup(keepSessionId = lastSessionId.ifEmpty { null })
+            probe.cleanup()
         }
         // Quick send: fills the current conversation's composer and sends. The
         // panel button and the ball long-press share this one path.
@@ -238,10 +272,17 @@ class MainActivity : AppCompatActivity() {
     /** Build a probe Config from the current panel values. */
     private fun probeConfigFromPanel(): ProbeController.Config = ProbeController.Config(
         targets = ProbeLogic.parseTargets(findViewById<EditText>(R.id.probe_targets).text.toString()),
-        maxRounds = findViewById<EditText>(R.id.probe_rounds).text.toString().toIntOrNull()?.coerceIn(1, 100) ?: 5,
+        maxRounds = ProbeLogic.parseRounds(findViewById<EditText>(R.id.probe_rounds).text.toString()),
         findAll = findViewById<CheckBox>(R.id.probe_find_all).isChecked,
         autoRename = findViewById<CheckBox>(R.id.probe_rename).isChecked,
+        renamePrefix = ProbeLogic.sanitizePrefix(findViewById<EditText>(R.id.probe_prefix).text.toString()),
     )
+
+    private fun afterTextChanged(block: (String) -> Unit) = object : TextWatcher {
+        override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+        override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+        override fun afterTextChanged(s: Editable?) = block(s?.toString().orEmpty())
+    }
 
     private fun startProbeFromPanel() {
         val cfg = probeConfigFromPanel()
@@ -265,7 +306,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Dock (single-tap radial) → run the arithmetic-title cleanup sweep. */
     private fun startCleanupFromDock() {
-        probe.cleanup(keepSessionId = lastSessionId.ifEmpty { null })
+        probe.cleanup()
     }
 
     /** Read the quick-send text from the panel and dispatch it to the current chat. */
@@ -287,7 +328,13 @@ class MainActivity : AppCompatActivity() {
         ball.centerIsModel = false
         ball.centerTop = top
         ball.centerBottom = bottom
-        ball.postDelayed({ ballBusy = false; renderPulse() }, 2500)
+        releaseBallAfter(2500)
+    }
+
+    /** Hand the ball center back to the model/quota display after [ms]. */
+    private fun releaseBallAfter(ms: Long) {
+        ball.removeCallbacks(releaseBall)
+        ball.postDelayed(releaseBall, ms)
     }
 
     private fun setProbeRunningUi(running: Boolean) {
@@ -491,82 +538,71 @@ class MainActivity : AppCompatActivity() {
             pollWarmUp(view)
             return
         }
-        injectSnoop(view)
-        // A full page load of a saved conversation → echo its remembered model;
-        // a new-chat composer (/agent, no id) → reset the display to 待确认.
-        applyNavigation(path)
+        injectPageScripts(view)
+        onPathChanged(path)
     }
 
     /**
      * SPA navigation (pushState) handler — fires when the user opens a saved chat
-     * from the sidebar without a full page reload. We only echo the remembered
-     * model; snoop.js stays injected across SPA nav so no re-injection is needed.
+     * from the sidebar without a full page reload. The page scripts stay injected
+     * across SPA navigation, so only the displayed conversation changes.
      */
     private fun onArenaUrlChanged(url: String) {
         if (!url.startsWith("https://arena.ai/")) return
         val path = runCatching { java.net.URI(url).path ?: "" }.getOrDefault("")
-        applyNavigation(path)
+        onPathChanged(path)
     }
 
     /**
-     * Route a navigation to the right model-display update:
-     *  - /agent/{id}  → restore that conversation's remembered/live model
-     *  - /agent       → a fresh composer, so the model is unknown → reset to 待确认
-     *    (without this, the ball/panel kept showing the PREVIOUS chat's model).
-     *  - anything else → leave the current display alone.
+     * The page path changed (full load or SPA navigation). The HUD follows the
+     * conversation on screen:
+     *  - /agent/{id} → that conversation's own turn log (or its stored model);
+     *  - /agent      → a fresh composer: nothing to show until its stream starts;
+     *  - other pages → leave the display alone.
+     * Switching never carries another chat's model or turns over.
      */
-    private fun applyNavigation(path: String) {
-        val sessionId = HistoryLogic.sessionFromPath(path)
-        when {
-            sessionId != null -> restoreModelForSession(sessionId)
-            path.trimEnd('/') == "/agent" -> clearModelDisplay()
-        }
+    private fun onPathChanged(path: String) {
+        val changed = path != currentPath
+        currentPath = path
+        if (changed) intake.onNavigate(path)
+        val next = HistoryLogic.sessionFromPath(path)
+            ?: if (SessionRouting.isNewChatPath(path)) intake.newChatSession.orEmpty() else return
+        if (!changed && next == displaySession) return
+        displaySession = next
+        refreshModelDisplay()
     }
 
-    /** Reset the model display to "待确认" for a brand-new conversation. */
-    private fun clearModelDisplay() {
-        if (lastRestoredSession == NEW_CHAT_MARKER) return // already reset for this new chat
-        lastRestoredSession = NEW_CHAT_MARKER
-        lastSessionId = ""
-        currentModel = ""
-        // New conversation → drop per-turn history so counting restarts at 1.
-        // (Best-effort complement to the token-time reset in turns.onToken.)
-        turns.reset()
-        if (ballBusy) return
-        hudModel.text = "模型待确认"
-        hudStatus.text = "等待会话流…"
-        ball.centerIsModel = false
-        ball.centerRouted = false
-        renderPulse() // repaint the ball center as quota % / placeholder
+    /** A conversation's turns changed (new turn, resolved, failed). Main thread. */
+    private fun onTurnsChanged(sessionId: String) {
+        // On the new-chat page, adopt the conversation being created.
+        if (displaySession.isEmpty() && SessionRouting.isNewChatPath(currentPath) &&
+            intake.newChatSession == sessionId
+        ) {
+            displaySession = sessionId
+        }
+        if (sessionId == displaySession) refreshModelDisplay()
     }
 
-    /**
-     * Show the locally remembered model(s) for a conversation, if any. Guarded so
-     * it runs once per session change and never clobbers a model we've already
-     * resolved live for the same session (the live snoop→trace result wins).
-     */
-    private fun restoreModelForSession(sessionId: String) {
-        if (sessionId == lastRestoredSession) return
-        lastRestoredSession = sessionId
-        lastSessionId = sessionId
-        // The routed flag compares against the LIVE-tracked conversation's first
-        // model; a remembered model for another chat must not inherit it.
-        if (sessionId != turns.sessionId) turns.clearRouted()
-        // If we already resolved this exact session live this run, keep that.
-        sessionModels[sessionId]?.let { live ->
-            currentModel = live
-            hudModel.text = live
-            applyBallModel(live.substringBefore(" / "))
-            return
+    /** Render the HUD + ball purely from (displaySession, its turns, stored history). */
+    private fun refreshModelDisplay() {
+        val sessionId = displaySession
+        val view = if (sessionId.isEmpty()) null else intake.view(sessionId)
+        val models = view?.currentModels.orEmpty()
+        currentModel = models.joinToString(" / ")
+        hudModel.text = currentModel.ifEmpty { "模型待确认" }
+        hudStatus.text = when {
+            view == null -> if (SessionRouting.isNewChatPath(currentPath)) "新对话 · 等待会话流…" else "等待会话流…"
+            view.turns.isNotEmpty() && !view.restored -> TurnFormat.status(view.turns, view.firstModel)
+            view.turns.isNotEmpty() -> "已恢复本地记录\n" + TurnFormat.historyLine(view.turns)
+            models.isNotEmpty() -> "已恢复本地记录的模型"
+            else -> "等待会话流…"
         }
-        val models = store.modelsFor(sessionId)
-        if (models.isEmpty()) return
-        val joined = models.joinToString(" / ")
-        sessionModels[sessionId] = joined
-        currentModel = joined
-        hudModel.text = joined
-        hudStatus.text = "已恢复本地记录的模型"
-        applyBallModel(models.first())
+        if (models.isEmpty()) {
+            ball.centerRouted = false
+            renderPulse() // center shows the quota % while the model is unknown
+        } else {
+            applyBallModel(models.first(), view?.routed == true)
+        }
     }
 
     /** Recheck readiness every [WARMUP_POLL_MS]; give up to a hard cap, then advance anyway. */
@@ -594,62 +630,19 @@ class MainActivity : AppCompatActivity() {
         view.loadUrl(ARENA_AGENT)
     }
 
-    private fun injectSnoop(view: WebView) {
-        // Order matters: conversation-rename exposes ArenaConversationRename, which
-        // probe.js's rename/archive actions call; inject it before probe.js.
-        for (asset in listOf("snoop.js", "conversation-rename.js", "probe.js")) {
-            val js = assets.open(asset).bufferedReader().use { it.readText() }
-            view.evaluateJavascript(js, null)
-        }
+    /** Inject the page scripts (each is idempotent, so re-injection is safe). */
+    private fun injectPageScripts(view: WebView) {
+        for (js in pageScripts) view.evaluateJavascript(js, null)
     }
 
-    private fun onSnoopEvent(json: String) {
-        val obj = runCatching { JSONObject(json) }.getOrNull() ?: return
-        val sessionId = obj.optString("sessionId")
-        val token = obj.optString("token")
-        if (token.length < 20) return
-        // Same token already handled → don't re-pull the trace (dedup, avoids 429s).
-        if (token == lastToken) return
-        lastToken = token
-        if (sessionId.isNotEmpty()) lastSessionId = sessionId
-
-        // A fresh token = a new turn. A non-empty sessionId that differs means
-        // the chat was SWITCHED (sidebar tap, probe newChat): reset the turn
-        // state here, authoritatively — a navigation event may never arrive
-        // (replaceState) or be skipped by the new-chat sentinel guard, and a
-        // stale firstModel would wrongly flag same-model turns as "routed".
-        val (thisTurn, _) = turns.onToken(sessionId)
-
-        runOnUiThread { hudStatus.text = "第 $thisTurn 轮 · 已截获令牌，正在识别模型…" }
-        traceJob?.cancel()
-        traceJob = lifecycleScope.launch(Dispatchers.IO) {
-            val result = traceClient.fetchModels(token, sessionId)
-            withContext(Dispatchers.Main) {
-                if (result.ok) {
-                    val joined = result.models.joinToString(" / ")
-                    if (sessionId.isNotEmpty()) {
-                        sessionModels[sessionId] = joined
-                        // Whitelist-only persistence: model name(s) keyed by sessionId.
-                        // Never tokens, trace, cookies, or conversation text.
-                        store.saveModels(sessionId, result.models)
-                    }
-                    // Stale-result guard: if the conversation switched (or a newer
-                    // token superseded this one) while the trace was in flight,
-                    // keep only the session→model mapping above — an old chat's
-                    // model must not rewrite the current chat's HUD, ball, or
-                    // turn history.
-                    if (token != lastToken ||
-                        (sessionId.isNotEmpty() && sessionId != turns.sessionId)
-                    ) return@withContext
-                    currentModel = joined
-                    hudModel.text = joined
-                    hudStatus.text = turns.record(thisTurn, joined)
-                    applyBallModel(result.models.firstOrNull() ?: joined)
-                } else {
-                    if (token != lastToken) return@withContext
-                    hudStatus.text = "第 $thisTurn 轮 · ${result.error}"
-                }
-            }
+    /**
+     * snoop.js → ArenaTrace.onSnoop (JavaBridge thread). Parsed here, handled on
+     * the main thread, where all turn state lives. Tokens are never logged.
+     */
+    private fun onSnoopPayload(json: String) {
+        val event = SessionRouting.parse(json) ?: return
+        runOnUiThread {
+            if (!isDestroyed) coordinator.onSnoop(event, currentPath)
         }
     }
 
@@ -661,33 +654,36 @@ class MainActivity : AppCompatActivity() {
      * Countdown ticks every second regardless.
      */
     private fun startPulseLoop() {
-        lifecycleScope.launch(Dispatchers.IO) {
-            while (isActive) {
-                val cookies = CookieManager.getInstance().getCookie(ARENA_HOME) ?: ""
-                val sig = Integer.toHexString(cookies.hashCode())
-                val now = System.currentTimeMillis()
-                val accountChanged = sig != lastCookieSig
-                val minGap = if (accountChanged) 15_000L else 60_000L
-                if (now - lastPulseFetch >= minGap && now >= pulseBlockedUntil) {
-                    lastCookieSig = sig
-                    lastPulseFetch = now
-                    when (val r = PulseClient.fetch(cookies)) {
-                        is PulseClient.Result.Ok -> {
-                            pulse = r.pulse
-                            pulseError = ""
-                            // Convert refreshedAt → reset instant, then anchor it so
-                            // per-minute refetch jitter can't restart the countdown.
-                            val candidate = PulseTiming.resetTimeFromRefreshedAt(r.pulse.refreshedAt, now)
-                            resetAtAnchor = PulseTiming.anchorReset(resetAtAnchor, candidate, now)
-                        }
-                        is PulseClient.Result.Err -> {
-                            pulseError = r.message
-                            if (r.retryAfterMs > 0) pulseBlockedUntil = now + minOf(r.retryAfterMs, 600_000)
+        lifecycleScope.launch {
+            // Only poll while the activity is visible; state is touched on main only.
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (isActive) {
+                    val cookies = CookieManager.getInstance().getCookie(ARENA_HOME).orEmpty()
+                    val sig = Integer.toHexString(cookies.hashCode())
+                    val now = System.currentTimeMillis()
+                    val accountChanged = sig != lastCookieSig
+                    val minGap = if (accountChanged) 15_000L else 60_000L
+                    if (now - lastPulseFetch >= minGap && now >= pulseBlockedUntil) {
+                        lastCookieSig = sig
+                        lastPulseFetch = now
+                        when (val r = withContext(Dispatchers.IO) { PulseClient.fetch(cookies) }) {
+                            is PulseClient.Result.Ok -> {
+                                pulse = r.pulse
+                                pulseError = ""
+                                // Convert refreshedAt → reset instant, then anchor it so
+                                // per-minute refetch jitter can't restart the countdown.
+                                val candidate = PulseTiming.resetTimeFromRefreshedAt(r.pulse.refreshedAt, now)
+                                resetAtAnchor = PulseTiming.anchorReset(resetAtAnchor, candidate, now)
+                            }
+                            is PulseClient.Result.Err -> {
+                                pulseError = r.message
+                                if (r.retryAfterMs > 0) pulseBlockedUntil = now + minOf(r.retryAfterMs, 600_000)
+                            }
                         }
                     }
+                    renderPulse()
+                    delay(1000)
                 }
-                withContext(Dispatchers.Main) { renderPulse() }
-                delay(1000)
             }
         }
     }
@@ -724,6 +720,7 @@ class MainActivity : AppCompatActivity() {
      */
     private fun showCleanupOnBall(archived: Int, active: Boolean) {
         if (active) {
+            ball.removeCallbacks(releaseBall)
             ballBusy = true
             ball.centerIsModel = false
             ball.centerTop = "清理"
@@ -732,11 +729,8 @@ class MainActivity : AppCompatActivity() {
             ball.centerIsModel = false
             ball.centerTop = "已归档"
             ball.centerBottom = "$archived"
-            // Hold the final count ~3s, then hand the center back to renderPulse.
-            ball.postDelayed({
-                ballBusy = false
-                renderPulse()
-            }, 3000)
+            // Hold the final count ~3s, then hand the center back.
+            releaseBallAfter(3000)
         }
     }
 
@@ -747,6 +741,7 @@ class MainActivity : AppCompatActivity() {
      */
     private fun showProbeOnBall(round: Int, maxRounds: Int, hits: Int, active: Boolean) {
         if (active) {
+            ball.removeCallbacks(releaseBall)
             ballBusy = true
             ball.centerIsModel = false
             ball.centerTop = if (round <= 0) "探针" else "R$round/$maxRounds"
@@ -755,10 +750,7 @@ class MainActivity : AppCompatActivity() {
             ball.centerIsModel = false
             ball.centerTop = "探针完"
             ball.centerBottom = "命中$hits"
-            ball.postDelayed({
-                ballBusy = false
-                renderPulse()
-            }, 3000)
+            releaseBallAfter(3000)
         }
     }
 
@@ -774,15 +766,15 @@ class MainActivity : AppCompatActivity() {
      *      "gpt-4o" → name "gpt", version "4o".
      * The first numeric token starts the version; everything before it is the name.
      */
-    private fun applyBallModel(model: String) {
+    private fun applyBallModel(model: String, routed: Boolean) {
         // While a transient status owns the ball center (cleanup sweep), don't let a
         // navigation/trace-triggered model update overwrite it.
         if (ballBusy) return
         val id = model.trim()
-        if (id.isEmpty()) { ball.centerIsModel = false; ball.centerRouted = false; ball.centerTop = "…"; ball.centerBottom = ""; return }
+        if (id.isEmpty()) { ball.centerIsModel = false; ball.centerRouted = false; renderPulse(); return }
         ball.centerIsModel = true
         // Orange-yellow when this turn's model differs from the conversation's first.
-        ball.centerRouted = turns.routed
+        ball.centerRouted = routed
         val parts = id.split('-', ' ', '_', '/').filter { it.isNotBlank() }
         val versionStart = parts.indexOfFirst { it.first().isDigit() }
         if (versionStart <= 0) {
@@ -797,8 +789,19 @@ class MainActivity : AppCompatActivity() {
 
     private fun clip(s: String, max: Int) = if (s.length > max) s.take(max) else s
 
+    override fun onResume() {
+        super.onResume()
+        webView.onResume()
+    }
+
+    override fun onPause() {
+        webView.onPause()
+        super.onPause()
+    }
+
     override fun onDestroy() {
-        traceJob?.cancel()
+        ball.removeCallbacks(releaseBall)
+        coordinator.cancelAll()
         probe.stop()
         webView.destroy()
         super.onDestroy()
@@ -807,9 +810,6 @@ class MainActivity : AppCompatActivity() {
     private companion object {
         const val ARENA_HOME = "https://arena.ai/"
         const val ARENA_AGENT = "https://arena.ai/agent"
-        // Sentinel for lastRestoredSession meaning "the new-chat composer": lets us
-        // reset the display to 待确认 exactly once per fresh chat.
-        const val NEW_CHAT_MARKER = "\u0000new-chat"
         const val WARMUP_POLL_MS = 400L
         const val WARMUP_MAX_MS = 15_000L
         // Returns "true" when the page still looks like a Cloudflare interstitial.

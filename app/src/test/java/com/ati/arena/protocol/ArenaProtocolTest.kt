@@ -161,4 +161,33 @@ class ArenaProtocolTest {
         assertEquals(false, ArenaProtocol.isFatalTraceStatus(404))
         assertEquals(false, ArenaProtocol.isFatalTraceStatus(500))
     }
+    // ---- inspectToken / isExpired (identify replayed turns without using stale tokens) ----
+
+    @Test fun inspectAcceptsExpiredTokenButValidateRejectsIt() {
+        val t = jwt("""{"pub":true,"iss":"https://id.trigger.dev","exp":${now - 60},"scopes":["read:runs:run_old"]}""")
+        assertNull(validate(t, "s1"))
+        val claims = ArenaProtocol.inspectToken(t, "s1")
+        assertEquals("run_old", claims?.runId)
+        assertTrue(ArenaProtocol.isExpired(claims!!, now))
+    }
+
+    @Test fun inspectStillEnforcesStructure() {
+        assertNull(ArenaProtocol.inspectToken(jwt("""{"pub":false,"iss":"https://id.trigger.dev","exp":$far,"run":"run_a"}"""), "s1"))
+        assertNull(ArenaProtocol.inspectToken(jwt("""{"pub":true,"iss":"https://id.trigger.dev","exp":$far,"run":"run_a","scopes":["read:sessions:other"]}"""), "s1"))
+        assertNull(ArenaProtocol.inspectToken("a.b", "s1"))
+        assertNull(ArenaProtocol.inspectToken("x".repeat(ArenaProtocol.MAX_TOKEN_LENGTH + 1), "s1"))
+    }
+
+    @Test fun expiryUsesSkew() {
+        val c = ArenaProtocol.Claims("run_a", now + ArenaProtocol.EXPIRY_SKEW_SECONDS)
+        assertTrue(ArenaProtocol.isExpired(c, now))
+        assertEquals(false, ArenaProtocol.isExpired(c.copy(exp = now + ArenaProtocol.EXPIRY_SKEW_SECONDS + 1), now))
+    }
+
+    @Test fun runIdValidation() {
+        assertTrue(ArenaProtocol.isValidRunId("run_abc123"))
+        assertEquals(false, ArenaProtocol.isValidRunId("run_"))
+        assertEquals(false, ArenaProtocol.isValidRunId("abc"))
+        assertEquals(false, ArenaProtocol.isValidRunId(null))
+    }
 }

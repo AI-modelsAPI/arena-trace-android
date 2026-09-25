@@ -1,5 +1,8 @@
 /* Rename through Arena's own UI. No private API calls, tokens or guessed endpoints. */
 (() => {
+  // Re-injection guard: a second copy would reset `busy` mid-operation.
+  const VERSION=2;
+  if((globalThis.ArenaConversationRename?.version||0)>=VERSION)return;
   let busy=false;
   const sessionFromPath=path=>path.match(/^\/agent\/([a-zA-Z0-9-]{1,128})\/?$/)?.[1]||null;
   function validate(sessionId,model){
@@ -40,6 +43,8 @@
   }
   const text=e=>(e?.textContent||'').trim();
   const exact=(e,words)=>words.includes(text(e));
+  // Confirmation dialog whose heading is about archiving ("Archive chat?", "归档对话？").
+  const isArchiveDialog=d=>{const h=d.querySelector('h2,[role="heading"],h1,h3');return /^(archive (chat|conversation)|归档(聊天|对话)?)[\s?？.。!！]*$/i.test(text(h));};
   async function rename({sessionId,model,isCurrent=()=>true}){
     const title=validate(sessionId,model);
     if(busy)throw Error('正在重命名，请稍候');
@@ -128,8 +133,8 @@
         const dialogs=[...document.querySelectorAll('[role="dialog"],[role="alertdialog"]')].filter(d=>visible(d)&&!isSidebarSheet(d));
         if(dialogs.length){
           guard();
-          if(dialogs.length!==1||!exact(dialogs[0].querySelector('h2'),['Archive chat','Archive conversation','归档聊天','归档对话']))throw Error('出现未识别的确认框，请手动处理；本地记录保留');
-          if(!dialog){dialog=dialogs[0];const buttons=[...dialog.querySelectorAll('button')].filter(b=>!b.disabled&&exact(b,['Archive','归档']));if(buttons.length!==1)throw Error('归档确认按钮不明确');guard();buttons[0].click();}
+          if(dialogs.length!==1||!isArchiveDialog(dialogs[0]))throw Error('出现未识别的确认框，请手动处理；本地记录保留');
+          if(!dialog){dialog=dialogs[0];const buttons=[...dialog.querySelectorAll('button')].filter(b=>!b.disabled&&exact(b,['Archive','归档','Archive chat','确认归档']));if(buttons.length!==1)throw Error('归档确认按钮不明确');guard();buttons[0].click();}
           stableSince=0;return false;
         }
         // Require a stable, still-visible sidebar, not just a disappearing document.
@@ -144,5 +149,5 @@
       busy=false;
     }
   }
-  globalThis.ArenaConversationRename={rename,archive,validate,sessionFromPath,isBusy:()=>busy};
+  globalThis.ArenaConversationRename={rename,archive,validate,sessionFromPath,isBusy:()=>busy,version:VERSION};
 })();

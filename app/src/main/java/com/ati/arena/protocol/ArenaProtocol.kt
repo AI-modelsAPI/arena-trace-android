@@ -12,6 +12,16 @@ object ArenaProtocol {
 
     data class Claims(val runId: String, val exp: Long)
 
+    /** Upper bound on a token's length; anything longer is not a Trigger.dev public token. */
+    const val MAX_TOKEN_LENGTH = 16_384
+
+    /** Seconds of remaining validity below which a token is treated as expired. */
+    const val EXPIRY_SKEW_SECONDS = 5L
+
+    private const val ISSUER = "https://id.trigger.dev"
+    private const val AUDIENCE = "https://api.trigger.dev"
+    private const val MAX_MODEL_LABEL = 200
+
     private val RUN_ID = Regex("^run_[A-Za-z0-9]+$")
     private val RUN_SCOPE = Regex("^read:runs:(run_[A-Za-z0-9]+)$")
     private val MODEL_SPANS = setOf(
@@ -22,36 +32,39 @@ object ArenaProtocol {
     )
     private val CUBE_ICONS = setOf("tabler-cube", "cube", "tabler-box")
 
-    /** Resolve exactly one run id: modern scalar `run` first, else a single read:runs scope. */
-    private fun runIdFromClaims(claims: JSONObject): String? {
-        val run = claims.opt("run")
-        if (run is String && RUN_ID.matches(run)) return run
-        val scopes = claims.optJSONArray("scopes") ?: return null
-        val runs = LinkedHashSet<String>()
-        for (i in 0 until scopes.length()) {
-            val scope = scopes.opt(i) as? String ?: continue
-            RUN_SCOPE.find(scope)?.let { runs.add(it.groupValues[1]) }
-        }
-        return runs.singleOrNull()
-    }
+    fun isValidRunId(runId: String?): Boolean = runId != null && RUN_ID.matches(runId)
 
     /** Returns validated claims, or null when the token is not a usable public run token. */
-    fun validateToken(token: String, sessionId: String, nowSeconds: Long): Claims? {
+    fun validateToken(token: String, sessionId: String, nowSeconds: Long): Claims? =
+        inspectToken(token, sessionId)?.takeUnless { isExpired(it, nowSeconds) }
+
+    /** True when [claims] are expired (or about to expire) at [nowSeconds]. */
+    fun isExpired(claims: Claims, nowSeconds: Long): Boolean =
+        claims.exp <= nowSeconds + EXPIRY_SKEW_SECONDS
+
+    /**
+     * Structural validation WITHOUT the expiry check: same issuer / audience / run /
+     * session rules as [validateToken]. Used only to IDENTIFY which run a token
+     * belongs to — e.g. an expired token replayed when an old conversation's
+     * stream is reopened still names the run (= turn) it came from. Never use an
+     * expired token for a network request; call [validateToken] for that.
+     */
+    fun inspectToken(token: String, sessionId: String): Claims? {
         val parts = token.split('.')
-        if (parts.size != 3 || token.length > 16384) return null
+        if (parts.size != 3 || token.length > MAX_TOKEN_LENGTH) return null
         val claims = runCatching {
             JSONObject(String(Base64.getUrlDecoder().decode(pad(parts[1])), Charsets.UTF_8))
         }.getOrNull() ?: return null
 
         if (claims.opt("pub") != true) return null
-        if (claims.optString("iss") != "https://id.trigger.dev") return null
+        if (claims.optString("iss") != ISSUER) return null
 
         // aud is optional; when present (scalar or array) it must include the API audience.
         val aud = audienceList(claims.opt("aud"))
-        if (aud.isNotEmpty() && !aud.contains("https://api.trigger.dev")) return null
+        if (aud.isNotEmpty() && !aud.contains(AUDIENCE)) return null
 
         val exp = claims.optDouble("exp", Double.NaN)
-        if (exp.isNaN() || exp <= nowSeconds + 5) return null
+        if (exp.isNaN() || exp.isInfinite() || exp <= 0) return null
 
         val runId = runIdFromClaims(claims) ?: return null
 
@@ -66,6 +79,19 @@ object ArenaProtocol {
             if (sessionScopes.isNotEmpty() && !sessionScopes.contains("read:sessions:$sessionId")) return null
         }
         return Claims(runId, exp.toLong())
+    }
+
+    /** Resolve exactly one run id: modern scalar `run` first, else a single read:runs scope. */
+    private fun runIdFromClaims(claims: JSONObject): String? {
+        val run = claims.opt("run")
+        if (run is String && RUN_ID.matches(run)) return run
+        val scopes = claims.optJSONArray("scopes") ?: return null
+        val runs = LinkedHashSet<String>()
+        for (i in 0 until scopes.length()) {
+            val scope = scopes.opt(i) as? String ?: continue
+            RUN_SCOPE.find(scope)?.let { runs.add(it.groupValues[1]) }
+        }
+        return runs.singleOrNull()
     }
 
     private fun pad(value: String): String {
@@ -101,7 +127,7 @@ object ArenaProtocol {
             val item = items.optJSONObject(j) ?: continue
             if (item.optString("icon") in CUBE_ICONS) {
                 val text = item.optString("text").trim()
-                if (text.isNotEmpty() && text.length <= 200) models.add(text)
+                if (text.isNotEmpty() && text.length <= MAX_MODEL_LABEL) models.add(text)
             }
         }
         return models

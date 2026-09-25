@@ -105,4 +105,76 @@ class HistoryLogicTest {
         assertTrue(HistoryLogic.modelsFor(null, "s1").isEmpty())
         assertTrue(HistoryLogic.modelsFor("{}", "bad id").isEmpty())
     }
+    // ---- per-turn records (hashed run keys) ----
+
+    @Test fun runKeyIsOpaqueStableHex() {
+        val k = HistoryLogic.runKey("run_abc123")
+        assertEquals(16, k.length)
+        assertTrue(HistoryLogic.isValidRunKey(k))
+        assertEquals(k, HistoryLogic.runKey("run_abc123"))
+        assertFalse(k.contains("abc123"))
+        assertFalse(k == HistoryLogic.runKey("run_abc124"))
+    }
+
+    private val k1 = HistoryLogic.runKey("run_1")
+    private val k2 = HistoryLogic.runKey("run_2")
+    private val k3 = HistoryLogic.runKey("run_3")
+
+    @Test fun mergeRunStoresObservedThenResolvedTurn() {
+        var json = HistoryLogic.mergeRun("{}", "s1", k1, 1, emptyList(), nowMs = 1)
+        assertEquals(listOf(HistoryLogic.RunRecord(k1, 1, emptyList())), HistoryLogic.runsFor(json, "s1"))
+        assertTrue(HistoryLogic.modelsFor(json, "s1").isEmpty())
+        json = HistoryLogic.mergeRun(json, "s1", k1, 1, listOf("m1"), nowMs = 2)
+        assertEquals(listOf("m1"), HistoryLogic.runsFor(json, "s1").single().models)
+        assertEquals(listOf("m1"), HistoryLogic.modelsFor(json, "s1"))
+    }
+
+    @Test fun existingTurnKeepsItsNumber() {
+        var json = HistoryLogic.mergeRun("{}", "s1", k1, 1, emptyList(), nowMs = 1)
+        json = HistoryLogic.mergeRun(json, "s1", k1, 7, listOf("m1"), nowMs = 2)
+        assertEquals(1, HistoryLogic.runsFor(json, "s1").single().number)
+    }
+
+    @Test fun sessionModelsFollowTheHighestResolvedTurn() {
+        var json = HistoryLogic.mergeRun("{}", "s1", k2, 2, listOf("newer"), nowMs = 1)
+        // An older turn resolving later must not overwrite the current model.
+        json = HistoryLogic.mergeRun(json, "s1", k1, 1, listOf("older"), nowMs = 2)
+        assertEquals(listOf("newer"), HistoryLogic.modelsFor(json, "s1"))
+        assertEquals(listOf(1, 2), HistoryLogic.runsFor(json, "s1").map { it.number })
+    }
+
+    @Test fun mergeRunIsNoOpWithoutChange() {
+        val json = HistoryLogic.mergeRun("{}", "s1", k1, 1, listOf("m1"), nowMs = 1)
+        assertEquals(json, HistoryLogic.mergeRun(json, "s1", k1, 1, listOf("m1"), nowMs = 2))
+        assertEquals(json, HistoryLogic.mergeRun(json, "s1", k1, 1, emptyList(), nowMs = 3))
+    }
+
+    @Test fun mergeRunRejectsInvalidInput() {
+        assertEquals("{}", HistoryLogic.mergeRun("{}", "bad id", k1, 1, listOf("m")))
+        assertEquals("{}", HistoryLogic.mergeRun("{}", "s1", "run_raw_id", 1, listOf("m")))
+        assertEquals("{}", HistoryLogic.mergeRun("{}", "s1", k1, 0, listOf("m")))
+    }
+
+    @Test fun runsPerSessionAreCappedKeepingTheNewest() {
+        var json = "{}"
+        for (n in 1..5) json = HistoryLogic.mergeRun(json, "s1", HistoryLogic.runKey("run_$n"), n, listOf("m$n"), maxRuns = 3, nowMs = n.toLong())
+        assertEquals(listOf(3, 4, 5), HistoryLogic.runsFor(json, "s1").map { it.number })
+        assertEquals(listOf("m5"), HistoryLogic.modelsFor(json, "s1"))
+    }
+
+    @Test fun legacyRecordsWithoutRunsStillWork() {
+        val legacy = HistoryLogic.mergeRecord("{}", "s1", listOf("m1"), nowMs = 1)
+        assertTrue(HistoryLogic.runsFor(legacy, "s1").isEmpty())
+        val json = HistoryLogic.mergeRun(legacy, "s1", k3, 1, listOf("m2"), nowMs = 2)
+        assertEquals(listOf("m2"), HistoryLogic.modelsFor(json, "s1"))
+    }
+
+    @Test fun corruptRunEntriesAreSkipped() {
+        val json = """{"s1":{"models":["m"],"runs":[{"k":"zz","n":1},{"k":"$k1","n":-3},{"k":"$k2","n":2,"m":["ok"]}],"updatedAt":1}}"""
+        assertEquals(listOf(HistoryLogic.RunRecord(k2, 2, listOf("ok"))), HistoryLogic.runsFor(json, "s1"))
+    }
+
+    @Test fun sanitizeRejectsControlCharacters() {
+        assertEquals(listOf("ok"), HistoryLogic.sanitizeModels(listOf("bad\u0000name", "ok")))
+    }
 }

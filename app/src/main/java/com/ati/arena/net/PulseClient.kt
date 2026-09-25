@@ -13,6 +13,8 @@ object PulseClient {
         .readTimeout(8, TimeUnit.SECONDS)
         .build()
 
+    private const val MAX_BODY_CHARS = 256 * 1024
+
     data class Pulse(val percent: Int, val refreshedAt: Long)
 
     sealed interface Result {
@@ -21,6 +23,7 @@ object PulseClient {
         data class Err(val message: String, val retryAfterMs: Long = 0) : Result
     }
 
+    /** Blocking; call from a background dispatcher. */
     fun fetch(cookies: String): Result {
         if (cookies.isBlank()) return Result.Err("未登录 Arena")
         val req = Request.Builder()
@@ -31,13 +34,16 @@ object PulseClient {
         return try {
             client.newCall(req).execute().use { res ->
                 when {
-                    res.code == 429 -> {
-                        val retrySec = res.header("Retry-After")?.toLongOrNull() ?: 120
-                        Result.Err("额度接口限流（429）", retrySec * 1000)
-                    }
+                    res.code == 429 -> Result.Err(
+                        "额度接口限流（429）",
+                        PulseTiming.retryAfterMs(res.header("Retry-After"), System.currentTimeMillis()),
+                    )
                     !res.isSuccessful -> Result.Err("额度接口返回 HTTP ${res.code}")
                     else -> {
-                        val obj = JSONObject(res.body!!.string())
+                        val text = res.body?.string().orEmpty()
+                        if (text.length > MAX_BODY_CHARS) return Result.Err("额度返回过大")
+                        val obj = runCatching { JSONObject(text) }.getOrNull()
+                            ?: return Result.Err("额度返回格式未识别（可能未登录）")
                         val percent = obj.optInt("pulse", -1)
                         if (percent !in 0..100) return Result.Err("额度返回格式未识别")
                         // Raw timestamp the quota window was last refreshed; the caller
@@ -49,7 +55,9 @@ object PulseClient {
                     }
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: java.io.IOException) {
+            Result.Err("额度读取失败：网络错误（${e.javaClass.simpleName}）")
+        } catch (e: RuntimeException) {
             Result.Err("额度读取失败：" + (e.message ?: e.javaClass.simpleName))
         }
     }
