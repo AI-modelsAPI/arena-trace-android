@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Flat, neutral-cool palette (light). Night values live in values-night. -->
+    <color name="brand">#2F6BFF</color>
+    <color name="on_brand">#FFFFFF</color>
+    <color name="brand_container">#DCE5FF</color>
+    <color name="on_brand_container">#0B2A70</color>
+
+    <color name="surface">#FFFFFF</color>
+    <color name="surface_low">#F4F5F8</color>
+    <color name="surface_high">#E9EBF0</color>
+    <color name="on_surface">#15171C</color>
+    <color name="on_surface_muted">#5F6673</color>
+    <color name="outline">#D8DBE2</color>
+
+    <color name="ok">#1E8E3E</color>
+    <color name="warn">#B26A00</color>
+    <color name="warn_soft">#1FB26A00</color>
+    <color name="danger">#D93025</color>
+
+    <color name="scrim">#52000000</color>
+    <color name="pill_bg">#F7FFFFFF</color>
+    <color name="pill_stroke">#1F000000</color>
+</resources>

@@ -1,4 +1,56 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Arena Trace</string>
+
+    <!-- Header -->
+    <string name="model_unknown">模型待确认</string>
+    <string name="quota_unknown">—</string>
+    <string name="log_expand">展开日志</string>
+
+    <!-- Tabs -->
+    <string name="tab_session">对话</string>
+    <string name="tab_probe">探针</string>
+    <string name="tab_tools">工具</string>
+
+    <!-- Session page -->
+    <string name="turns_empty">暂无轮次记录\n在 Arena 里发送消息后，每一轮使用的模型会显示在这里</string>
+    <string name="turn_routed_tag">已切换</string>
+
+    <!-- Probe page -->
+    <string name="probe_targets_hint">目标模型（逗号分隔，支持 /正则/）</string>
+    <string name="probe_targets_error">请至少填写一个目标</string>
+    <string name="probe_rounds_label">最多轮数</string>
+    <string name="probe_find_all">命中全部目标才停止</string>
+    <string name="probe_rename">命中后自动重命名会话</string>
+    <string name="probe_prefix_hint">会话名称前缀（可选）</string>
+    <string name="probe_prefix_disabled">开启「命中后自动重命名会话」后生效</string>
+    <string name="probe_start">开始探针</string>
+    <string name="probe_stop">停止探针</string>
+    <string name="probe_cost_note">会发送真实消息并消耗额度</string>
+    <string name="rounds_minus">减少轮数</string>
+    <string name="rounds_plus">增加轮数</string>
+
+    <!-- Tools page -->
+    <string name="cleanup_title">清理算式标题</string>
+    <string name="cleanup_desc">归档标题为纯算式（如 12+34=）的对话，包括侧栏里懒加载的旧对话；当前打开的算式对话会先切到新对话再归档。只归档，不删除。</string>
+    <string name="cleanup_start">开始清理</string>
+    <string name="cleanup_stop">停止清理</string>
+    <string name="quick_title">快捷发送</string>
+    <string name="quick_hint">发送到当前对话的内容</string>
+    <string name="quick_empty">请先输入要发送的内容</string>
+    <string name="quick_send">发送到当前对话</string>
+    <string name="quick_note">也可以长按悬浮窗，选择「快捷发送」</string>
+    <string name="page_title">页面</string>
+    <string name="nav_back">后退</string>
+    <string name="nav_forward">前进</string>
+    <string name="nav_reload">刷新</string>
+
+    <!-- Quick-action menu (long-press the pill) -->
+    <string name="menu_probe">开始探针</string>
+    <string name="menu_cleanup">清理算式标题</string>
+    <string name="menu_quick_send">快捷发送</string>
+    <string name="menu_stop_probe">停止探针</string>
+    <string name="menu_stop_cleanup">停止清理</string>
+    <string name="menu_reload">刷新页面</string>
+    <string name="menu_panel">打开面板</string>
 </resources>

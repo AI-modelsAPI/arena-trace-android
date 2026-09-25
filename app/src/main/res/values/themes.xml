@@ -1,6 +1,53 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- MaterialCardView (used in activity_main.xml) requires a MaterialComponents
-         descendant theme; an AppCompat theme makes it throw at inflation time. -->
-    <style name="Theme.ArenaTrace" parent="Theme.MaterialComponents.DayNight.NoActionBar" />
+    <!-- Material 3, day/night. All colors come from values(-night)/colors.xml so the
+         overlay stays flat and consistent in both modes. -->
+    <style name="Theme.ArenaTrace" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/brand</item>
+        <item name="colorOnPrimary">@color/on_brand</item>
+        <item name="colorPrimaryContainer">@color/brand_container</item>
+        <item name="colorOnPrimaryContainer">@color/on_brand_container</item>
+        <item name="colorSecondary">@color/brand</item>
+        <item name="colorOnSecondary">@color/on_brand</item>
+        <item name="colorSecondaryContainer">@color/brand_container</item>
+        <item name="colorOnSecondaryContainer">@color/on_brand_container</item>
+        <item name="colorSurface">@color/surface</item>
+        <item name="colorOnSurface">@color/on_surface</item>
+        <item name="colorSurfaceVariant">@color/surface_high</item>
+        <item name="colorOnSurfaceVariant">@color/on_surface_muted</item>
+        <item name="colorSurfaceContainerLowest">@color/surface</item>
+        <item name="colorSurfaceContainerLow">@color/surface_low</item>
+        <item name="colorSurfaceContainer">@color/surface_low</item>
+        <item name="colorSurfaceContainerHigh">@color/surface_high</item>
+        <item name="colorSurfaceContainerHighest">@color/surface_high</item>
+        <item name="colorOutline">@color/outline</item>
+        <item name="colorOutlineVariant">@color/outline</item>
+        <item name="colorError">@color/danger</item>
+        <item name="android:colorBackground">@color/surface</item>
+        <item name="android:statusBarColor">@color/surface</item>
+        <item name="android:windowLightStatusBar">@bool/light_system_bars</item>
+    </style>
+
+    <!-- Compact segmented tab button. -->
+    <style name="Widget.ArenaTrace.Segment" parent="Widget.Material3.Button.OutlinedButton">
+        <item name="android:minHeight">36dp</item>
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:paddingStart">4dp</item>
+        <item name="android:paddingEnd">4dp</item>
+    </style>
+
+    <!-- Small section heading inside the panel pages. -->
+    <style name="TextAppearance.ArenaTrace.Section" parent="">
+        <item name="android:textSize">14sp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textColor">@color/on_surface</item>
+    </style>
+
+    <!-- Secondary caption text. -->
+    <style name="TextAppearance.ArenaTrace.Caption" parent="">
+        <item name="android:textSize">12sp</item>
+        <item name="android:textColor">@color/on_surface_muted</item>
+    </style>
 </resources>

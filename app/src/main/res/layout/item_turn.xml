@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One conversation turn: "R3  model-name  [已切换]  ✓" -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:gravity="center_vertical"
+    android:minHeight="36dp"
+    android:orientation="horizontal"
+    android:paddingStart="20dp"
+    android:paddingEnd="20dp">
+
+    <TextView
+        android:id="@+id/turn_number"
+        android:layout_width="44dp"
+        android:layout_height="wrap_content"
+        android:fontFamily="monospace"
+        android:textColor="@color/on_surface_muted"
+        android:textSize="12sp" />
+
+    <TextView
+        android:id="@+id/turn_model"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:ellipsize="middle"
+        android:singleLine="true"
+        android:textColor="@color/on_surface"
+        android:textSize="14sp" />
+
+    <TextView
+        android:id="@+id/turn_tag"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="8dp"
+        android:background="@drawable/bg_tag_warn"
+        android:paddingStart="6dp"
+        android:paddingTop="1dp"
+        android:paddingEnd="6dp"
+        android:paddingBottom="1dp"
+        android:text="@string/turn_routed_tag"
+        android:textColor="@color/warn"
+        android:textSize="11sp"
+        android:visibility="gone" />
+
+    <FrameLayout
+        android:layout_width="18dp"
+        android:layout_height="18dp"
+        android:layout_marginStart="10dp">
+
+        <ImageView
+            android:id="@+id/turn_state"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:importantForAccessibility="no" />
+
+        <com.google.android.material.progressindicator.CircularProgressIndicator
+            android:id="@+id/turn_progress"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:indeterminate="true"
+            android:visibility="gone"
+            app:indicatorSize="14dp"
+            app:trackThickness="2dp" />
+    </FrameLayout>
+</LinearLayout>

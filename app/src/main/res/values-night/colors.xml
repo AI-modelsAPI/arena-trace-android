@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="brand">#9DB8FF</color>
+    <color name="on_brand">#0B2A70</color>
+    <color name="brand_container">#233F8C</color>
+    <color name="on_brand_container">#DCE5FF</color>
+
+    <color name="surface">#16181D</color>
+    <color name="surface_low">#1F2228</color>
+    <color name="surface_high">#2A2E36</color>
+    <color name="on_surface">#E6E8ED</color>
+    <color name="on_surface_muted">#9BA2AF</color>
+    <color name="outline">#353A45</color>
+
+    <color name="ok">#6DD58C</color>
+    <color name="warn">#FFB951</color>
+    <color name="warn_soft">#29FFB951</color>
+    <color name="danger">#FF8A80</color>
+
+    <color name="scrim">#80000000</color>
+    <color name="pill_bg">#F71E2128</color>
+    <color name="pill_stroke">#29FFFFFF</color>
+</resources>

@@ -101,7 +101,36 @@ class Store(context: Context) : TurnIntake.History {
             .apply()
     }
 
+    // ---- overlay UI state ----
+
+    /** Where the floating pill sits (side + vertical fraction) and the last panel tab. */
+    data class UiPrefs(
+        val pillOnRight: Boolean = true,
+        val pillY: Float = DEFAULT_PILL_Y,
+        val lastTab: Int = 0,
+    )
+
+    fun loadUiPrefs(): UiPrefs = runCatching {
+        UiPrefs(
+            pillOnRight = prefs.getBoolean(KEY_PILL_RIGHT, true),
+            pillY = prefs.getFloat(KEY_PILL_Y, DEFAULT_PILL_Y).let { if (it.isNaN()) DEFAULT_PILL_Y else it.coerceIn(0f, 1f) },
+            lastTab = prefs.getInt(KEY_LAST_TAB, 0).coerceAtLeast(0),
+        )
+    }.getOrDefault(UiPrefs())
+
+    fun saveUiPrefs(p: UiPrefs) {
+        prefs.edit()
+            .putBoolean(KEY_PILL_RIGHT, p.pillOnRight)
+            .putFloat(KEY_PILL_Y, p.pillY.coerceIn(0f, 1f))
+            .putInt(KEY_LAST_TAB, p.lastTab.coerceAtLeast(0))
+            .apply()
+    }
+
     private companion object {
+        const val DEFAULT_PILL_Y = 0.18f
+        const val KEY_PILL_RIGHT = "ui_pill_right"
+        const val KEY_PILL_Y = "ui_pill_y"
+        const val KEY_LAST_TAB = "ui_last_tab"
         const val PREFS_NAME = "arena_trace"
         const val KEY_HISTORY = "session_models"
         const val KEY_TARGETS = "probe_targets"
