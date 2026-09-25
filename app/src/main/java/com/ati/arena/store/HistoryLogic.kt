@@ -27,6 +27,7 @@ object HistoryLogic {
     const val MAX_RUNS_PER_SESSION = 50
     const val MAX_MODELS = 8
     const val MAX_MODEL_LENGTH = 200
+    const val MAX_STRENGTH_LENGTH = 16
     private const val MAX_TURN_NUMBER = 1_000_000
 
     /** Arena conversation path is /agent/{sessionId} or /c/{sessionId}; the id charset is bounded. */
@@ -41,9 +42,10 @@ object HistoryLogic {
     private const val R_KEY = "k"
     private const val R_NUMBER = "n"
     private const val R_MODELS = "m"
+    private const val R_STRENGTH = "s"
 
     /** One persisted turn. */
-    data class RunRecord(val key: String, val number: Int, val models: List<String>)
+    data class RunRecord(val key: String, val number: Int, val models: List<String>, val strength: String = "")
 
     fun isValidSessionId(id: String?): Boolean = id != null && SESSION_ID.matches(id)
 
@@ -89,6 +91,10 @@ object HistoryLogic {
             .distinct()
             .take(maxModels)
 
+    /** Sanitize a strength/effort tier label: trimmed, control-free, length capped. */
+    fun sanitizeStrength(strength: String): String =
+        strength.trim().filter { it.code >= 0x20 && it.code != 0x7f }.take(MAX_STRENGTH_LENGTH)
+
     /** Parse stored JSON leniently: corrupt or missing data yields an empty root. */
     fun parseRoot(json: String?): JSONObject =
         runCatching { JSONObject(json ?: "{}") }.getOrElse { JSONObject() }
@@ -130,21 +136,27 @@ object HistoryLogic {
         key: String,
         number: Int,
         models: List<String>,
+        strength: String = "",
         maxEntries: Int = MAX_SESSIONS,
         maxRuns: Int = MAX_RUNS_PER_SESSION,
         nowMs: Long = System.currentTimeMillis(),
     ): Boolean {
         if (!isValidSessionId(sessionId) || !isValidRunKey(key) || number !in 1..MAX_TURN_NUMBER) return false
         val clean = sanitizeModels(models)
+        val tier = sanitizeStrength(strength)
         val entry = root.optJSONObject(sessionId) ?: JSONObject()
         val runs = readRuns(entry).toMutableList()
         val index = runs.indexOfFirst { it.key == key }
         if (index >= 0) {
             val existing = runs[index]
-            if (clean.isEmpty() || existing.models == clean) return false
-            runs[index] = existing.copy(models = clean)
+            val merged = existing.copy(
+                models = if (clean.isEmpty()) existing.models else clean,
+                strength = if (tier.isEmpty()) existing.strength else tier,
+            )
+            if (merged == existing) return false
+            runs[index] = merged
         } else {
-            runs.add(RunRecord(key, number, clean))
+            runs.add(RunRecord(key, number, clean, tier))
         }
         val kept = runs.sortedBy { it.number }.takeLast(maxRuns.coerceAtLeast(1))
         entry.put(F_RUNS, JSONArray().apply { kept.forEach { put(runJson(it)) } })
@@ -194,12 +206,13 @@ object HistoryLogic {
         key: String,
         number: Int,
         models: List<String>,
+        strength: String = "",
         maxEntries: Int = MAX_SESSIONS,
         maxRuns: Int = MAX_RUNS_PER_SESSION,
         nowMs: Long = System.currentTimeMillis(),
     ): String {
         val root = parseRoot(existingJson)
-        return if (putRun(root, sessionId, key, number, models, maxEntries, maxRuns, nowMs)) root.toString()
+        return if (putRun(root, sessionId, key, number, models, strength, maxEntries, maxRuns, nowMs)) root.toString()
         else existingJson ?: "{}"
     }
 
@@ -218,13 +231,21 @@ object HistoryLogic {
             val key = o.optString(R_KEY)
             val number = o.optInt(R_NUMBER, 0)
             if (!isValidRunKey(key) || number !in 1..MAX_TURN_NUMBER || !seen.add(key)) continue
-            out.add(RunRecord(key, number, sanitizeModels(stringList(o.optJSONArray(R_MODELS)))))
+            out.add(
+                RunRecord(
+                    key,
+                    number,
+                    sanitizeModels(stringList(o.optJSONArray(R_MODELS))),
+                    sanitizeStrength(o.optString(R_STRENGTH)),
+                ),
+            )
         }
         return out
     }
 
     private fun runJson(r: RunRecord): JSONObject =
         JSONObject().put(R_KEY, r.key).put(R_NUMBER, r.number).put(R_MODELS, JSONArray(r.models))
+            .also { if (r.strength.isNotEmpty()) it.put(R_STRENGTH, r.strength) }
 
     private fun evictOldest(root: JSONObject, maxEntries: Int) {
         if (maxEntries <= 0) return

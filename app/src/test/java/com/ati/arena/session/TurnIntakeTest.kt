@@ -21,8 +21,8 @@ class TurnIntakeTest {
         var writes = 0
         override fun runsFor(sessionId: String) = HistoryLogic.runsFor(json, sessionId)
         override fun modelsFor(sessionId: String) = HistoryLogic.modelsFor(json, sessionId)
-        override fun saveRun(sessionId: String, key: String, number: Int, models: List<String>) {
-            val next = HistoryLogic.mergeRun(json, sessionId, key, number, models, nowMs = 1)
+        override fun saveRun(sessionId: String, key: String, number: Int, models: List<String>, strength: String) {
+            val next = HistoryLogic.mergeRun(json, sessionId, key, number, models, strength, nowMs = 1)
             if (next != json) writes++
             json = next
         }
@@ -341,5 +341,25 @@ class TurnIntakeTest {
         val own = i.onToken(event("run_x", "stream-x", page = "/c/eval-123"), null, notInFlight) as Action.Fetch
         assertEquals(1, own.turn.number)
         assertEquals("stream-x", i.conversationFor("eval-123"))
+    }
+
+    @Test
+    fun strengthFlowsToTurnsLabelsAndHistory() {
+        val history = FakeHistory()
+        val i = intake(history)
+        val a = i.onToken(event("run_s", "s1"), null, notInFlight) as Action.Fetch
+        val updated = i.onTraceResult("s1", a.turn.key, listOf("model-a"), "", strength = "high")
+        assertEquals("high", updated?.strength)
+        assertEquals("model-a · high", TurnFormat.label(updated!!))
+        assertTrue(history.json.contains("\"s\":\"high\""))
+        // A re-resolve without a new tier keeps it; a new tier replaces it.
+        i.onTraceResult("s1", a.turn.key, listOf("model-a"), "")
+        assertEquals("high", i.turns.turns("s1").single().strength)
+        i.onTraceResult("s1", a.turn.key, listOf("model-a"), "", strength = "max")
+        assertEquals("model-a · max", TurnFormat.label(i.turns.turns("s1").single()))
+        // History can seed the tier back after a restart.
+        val fresh = intake(history)
+        assertEquals(Action.Known::class, fresh.onToken(event("run_s", "s1"), null, notInFlight)::class)
+        assertEquals("model-a · max", TurnFormat.label(fresh.turns.turns("s1").single()))
     }
 }

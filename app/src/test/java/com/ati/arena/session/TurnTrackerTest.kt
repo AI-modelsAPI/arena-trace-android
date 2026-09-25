@@ -179,4 +179,19 @@ class TurnTrackerTest {
         t.clear()
         assertTrue(t.turns("s2").isEmpty())
     }
+
+    @Test
+    fun resolveAppliesStrengthAndKeepsItAcrossRefreshes() {
+        val t = TurnTracker()
+        t.onRun("s1", "a1")
+        t.resolve("s1", "a1", listOf("m"), "high")
+        assertEquals("high", t.turn("s1", "a1")?.strength)
+        t.resolve("s1", "a1", listOf("m"))
+        assertEquals("high", t.turn("s1", "a1")?.strength)
+        t.resolve("s1", "a1", listOf("m"), " max ")
+        assertEquals("max", t.turn("s1", "a1")?.strength)
+        // Seeds restore the tier and merge it into a pending re-sighting.
+        t.seed("s2", listOf(Seed("k9", 3, listOf("x"), "ultra")))
+        assertEquals("ultra", t.turn("s2", "k9")?.strength)
+    }
 }

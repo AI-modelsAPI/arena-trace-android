@@ -193,4 +193,20 @@ class HistoryLogicTest {
     @Test fun sanitizeRejectsControlCharacters() {
         assertEquals(listOf("ok"), HistoryLogic.sanitizeModels(listOf("bad\u0000name", "ok")))
     }
+
+    @Test
+    fun strengthIsPersistedAndSurvivesModelRefreshes() {
+        var json = HistoryLogic.mergeRun("{}", "s1", k1, 1, listOf("m1"), strength = "high", nowMs = 1)
+        assertEquals("high", HistoryLogic.runsFor(json, "s1").single().strength)
+        json = HistoryLogic.mergeRun(json, "s1", k1, 1, listOf("m1b"), nowMs = 2)
+        val run = HistoryLogic.runsFor(json, "s1").single()
+        assertEquals(listOf("m1b"), run.models)
+        assertEquals("high", run.strength)
+        json = HistoryLogic.mergeRun(json, "s1", k1, 1, listOf("m1b"), strength = "  max  ", nowMs = 3)
+        assertEquals("max", HistoryLogic.runsFor(json, "s1").single().strength)
+        // History never pretends strengths of OTHER runs; junk is stripped/capped.
+        assertTrue(HistoryLogic.sanitizeStrength("a".repeat(64)).length <= HistoryLogic.MAX_STRENGTH_LENGTH)
+        assertEquals("", HistoryLogic.sanitizeStrength(" \t "))
+        assertEquals("", HistoryLogic.runsFor("{}", "s1").getOrNull(0)?.strength ?: "")
+    }
 }

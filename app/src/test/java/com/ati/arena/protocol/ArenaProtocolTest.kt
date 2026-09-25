@@ -190,4 +190,42 @@ class ArenaProtocolTest {
         assertEquals(false, ArenaProtocol.isValidRunId("abc"))
         assertEquals(false, ArenaProtocol.isValidRunId(null))
     }
+
+    // ---- strength/effort tier ----
+
+    @Test fun extractsEffortChipFromModelSpan() {
+        val event = """{"runId":"run_abc123","message":"ai.streamText.doStream","style":{"accessory":{"items":[{"text":"grok-4.6","icon":"tabler-cube"},{"text":"high","icon":"tabler-bolt"}]}}}"""
+        assertEquals(
+            "high",
+            ArenaProtocol.extractEffort(trace("""{"events":[$event]}"""), "run_abc123", listOf("grok-4.6")),
+        )
+    }
+
+    @Test fun effortFallsBackToOtherSpansButNotOtherRuns() {
+        val effort = """{"runId":"run_abc123","message":"chat title","style":{"accessory":{"items":[{"text":"max","icon":"tabler-flame"}]}}}"""
+        assertEquals(
+            "max",
+            ArenaProtocol.extractEffort(
+                trace("""{"events":[$streamEvent,$effort]}"""), "run_abc123", listOf("grok-4.6"),
+            ),
+        )
+        // No tier signal → null; other runs never leak; malformed traces are safe.
+        assertNull(ArenaProtocol.extractEffort(trace("""{"events":[$streamEvent]}"""), "run_abc123", listOf("grok-4.6")))
+        assertNull(ArenaProtocol.extractEffort(trace("""{"events":[$effort]}"""), "run_other", listOf("grok-4.6")))
+        assertNull(ArenaProtocol.extractEffort(trace("""{}"""), "run_abc123"))
+    }
+
+    @Test fun effortFromReasoningEffortKeyAndModelNameExcluded() {
+        val payload = """{"runId":"run_abc123","message":"ai.streamText.doStream","data":{"model":"claude-opus","reasoning_effort":"high","text":"hi"}}"""
+        assertEquals(
+            "high",
+            ArenaProtocol.extractEffort(trace("""{"events":[$payload]}"""), "run_abc123", listOf("claude-opus")),
+        )
+        // A model literally named "max" must not be reported as a tier (chip == its own name).
+        val maxChip = """{"runId":"run_abc123","message":"ai.streamText.doStream","style":{"accessory":{"items":[{"text":"max","icon":"tabler-cube"}]}}}"""
+        assertNull(ArenaProtocol.extractEffort(trace("""{"events":[$maxChip]}"""), "run_abc123", listOf("max")))
+        // Non-whitelisted words and unsupported tiers are not tiers.
+        val bogus = """{"runId":"run_abc123","message":"chat title","style":{"accessory":{"items":[{"text":"$0.01","icon":"tabler-currency-dollar"},{"text":"so-high-lol","icon":"x"}]}}}"""
+        assertNull(ArenaProtocol.extractEffort(trace("""{"events":[$bogus]}"""), "run_abc123", listOf("m")))
+    }
 }

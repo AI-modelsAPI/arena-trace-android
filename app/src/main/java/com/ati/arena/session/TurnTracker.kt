@@ -33,6 +33,8 @@ class TurnTracker(
         val status: Status,
         val models: List<String> = emptyList(),
         val note: String = "",
+        /** Optional strength/effort tier from the trace ("high", "max", …). */
+        val strength: String = "",
     ) {
         /** Primary model label ("" until resolved). */
         val model: String get() = models.firstOrNull().orEmpty()
@@ -41,7 +43,7 @@ class TurnTracker(
     data class Registration(val turn: Turn, val isNew: Boolean)
 
     /** A persisted turn used to seed a conversation's log. */
-    data class Seed(val key: String, val number: Int, val models: List<String>)
+    data class Seed(val key: String, val number: Int, val models: List<String>, val strength: String = "")
 
     private class Log {
         var nextNumber = 1
@@ -71,13 +73,18 @@ class TurnTracker(
             if (existing == null) {
                 if (s.number in taken) continue
                 log.byKey[s.key] = if (s.models.isNotEmpty()) {
-                    Turn(s.number, s.key, Status.RESOLVED, s.models)
+                    Turn(s.number, s.key, Status.RESOLVED, s.models, strength = s.strength)
                 } else {
                     Turn(s.number, s.key, Status.FAILED, note = NOTE_UNKNOWN)
                 }
                 taken.add(s.number)
             } else if (existing.status != Status.RESOLVED && s.models.isNotEmpty()) {
-                log.byKey[s.key] = existing.copy(status = Status.RESOLVED, models = s.models, note = "")
+                log.byKey[s.key] = existing.copy(
+                    status = Status.RESOLVED,
+                    models = s.models,
+                    note = "",
+                    strength = s.strength.ifEmpty { existing.strength },
+                )
             }
             if (s.number >= log.nextNumber) log.nextNumber = s.number + 1
         }
@@ -94,13 +101,17 @@ class TurnTracker(
         return Registration(turn, true)
     }
 
-    /** Record the models resolved for a run. Returns the updated turn, or null if unknown. */
-    fun resolve(sessionId: String, key: String, models: List<String>): Turn? {
+    /**
+     * Record the models resolved for a run (and optionally its strength tier).
+     * A re-resolve without a new tier keeps the previously stored one.
+     */
+    fun resolve(sessionId: String, key: String, models: List<String>, strength: String = ""): Turn? {
         val log = logs[sessionId] ?: return null
         val current = log.byKey[key] ?: return null
         val clean = models.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         if (clean.isEmpty()) return fail(sessionId, key, NOTE_NO_MODEL)
-        val updated = current.copy(status = Status.RESOLVED, models = clean, note = "")
+        val tier = strength.trim().take(MAX_STRENGTH_LENGTH).ifEmpty { current.strength }
+        val updated = current.copy(status = Status.RESOLVED, models = clean, note = "", strength = tier)
         log.byKey[key] = updated
         return updated
     }
@@ -173,5 +184,6 @@ class TurnTracker(
         const val DEFAULT_MAX_TURNS = 200
         const val NOTE_UNKNOWN = "未识别"
         const val NOTE_NO_MODEL = "trace 未返回模型名称"
+        const val MAX_STRENGTH_LENGTH = 16
     }
 }

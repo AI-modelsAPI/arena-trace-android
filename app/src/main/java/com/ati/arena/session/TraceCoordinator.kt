@@ -82,15 +82,21 @@ class TraceCoordinator(
                 } else {
                     gate.withPermit { withContext(Dispatchers.IO) { traceClient.fetchModels(token, claims) } }
                 }
-                val updated = intake.onTraceResult(sessionId, key, if (result.ok) result.models else emptyList(), result.error)
+                val updated = intake.onTraceResult(
+                    sessionId,
+                    key,
+                    if (result.ok) result.models else emptyList(),
+                    result.error,
+                    strength = result.strength,
+                )
                 if (updated != null && updated.status == TurnTracker.Status.RESOLVED) {
                     if (refresh) {
                         // The run grew a new reply: report only when models changed.
                         if (updated.models != previousModels) {
-                            log("模型更新: " + updated.models.joinToString("、"))
+                            log("模型更新: " + TurnFormat.label(updated))
                         }
                     } else {
-                        log("第 ${updated.number} 轮 · 模型: " + updated.models.joinToString("、"))
+                        log("第 ${updated.number} 轮 · 模型: " + TurnFormat.label(updated))
                     }
                 } else if (!refresh && updated != null && updated.status == TurnTracker.Status.FAILED) {
                     log("第 ${updated.number} 轮 · 未能解析模型（${updated.note.ifEmpty { result.error ?: "未知原因" }}）")

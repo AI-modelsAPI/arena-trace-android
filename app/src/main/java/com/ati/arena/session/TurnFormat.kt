@@ -17,7 +17,8 @@ object TurnFormat {
 
     /** Label for one turn: its model, "识别中…", or the failure note. */
     fun label(turn: Turn): String = when (turn.status) {
-        Status.RESOLVED -> turn.models.joinToString(" / ")
+        Status.RESOLVED -> turn.models.joinToString(" / ") +
+            (if (turn.strength.isNotEmpty()) " · ${turn.strength}" else "")
         Status.PENDING -> PENDING_LABEL
         Status.FAILED -> turn.note.ifEmpty { TurnTracker.NOTE_UNKNOWN }
     }

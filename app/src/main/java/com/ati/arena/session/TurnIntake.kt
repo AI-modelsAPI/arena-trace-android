@@ -32,7 +32,7 @@ class TurnIntake(
     interface History {
         fun runsFor(sessionId: String): List<HistoryLogic.RunRecord>
         fun modelsFor(sessionId: String): List<String>
-        fun saveRun(sessionId: String, key: String, number: Int, models: List<String>)
+        fun saveRun(sessionId: String, key: String, number: Int, models: List<String>, strength: String = "")
     }
 
     /** Why a token produced no action. Content-free, safe to log. */
@@ -133,7 +133,7 @@ class TurnIntake(
     fun ensureSeeded(sessionId: String) {
         if (!HistoryLogic.isValidSessionId(sessionId) || turns.isSeeded(sessionId)) return
         val seeds = runCatching { history.runsFor(sessionId) }.getOrDefault(emptyList())
-            .map { TurnTracker.Seed(it.key, it.number, it.models) }
+            .map { TurnTracker.Seed(it.key, it.number, it.models, it.strength) }
         turns.seed(sessionId, seeds)
     }
 
@@ -241,10 +241,10 @@ class TurnIntake(
     }
 
     /** Apply a trace result. Returns the updated turn (null if the turn is gone). */
-    fun onTraceResult(sessionId: String, key: String, models: List<String>, error: String): Turn? {
+    fun onTraceResult(sessionId: String, key: String, models: List<String>, error: String, strength: String = ""): Turn? {
         val clean = HistoryLogic.sanitizeModels(models)
         return if (clean.isNotEmpty()) {
-            val turn = turns.resolve(sessionId, key, clean) ?: return null
+            val turn = turns.resolve(sessionId, key, clean, strength) ?: return null
             persist(sessionId, turn)
             turn
         } else {
@@ -281,7 +281,7 @@ class TurnIntake(
     }
 
     private fun persist(sessionId: String, turn: Turn) {
-        runCatching { history.saveRun(sessionId, turn.key, turn.number, turn.models) }
+        runCatching { history.saveRun(sessionId, turn.key, turn.number, turn.models, turn.strength) }
     }
 
     private fun trimAttempts() {

@@ -32,6 +32,17 @@ object ArenaProtocol {
     )
     private val CUBE_ICONS = setOf("tabler-cube", "cube", "tabler-box")
 
+    /** Strength/effort tiers we surface (" · high"). Whitelisting prevents random chip text from showing. */
+    private val EFFORT_WORDS = setOf("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+
+    /** JSON keys that can carry a reasoning effort, e.g. {"reasoning_effort":"high"}. */
+    private val EFFORT_PATTERN = Regex(
+        """"(?:reasoning[-_]?effort|thinking[-_]?effort|reasoningEffort|thinkingEffort|effort)"\s*:\s*"([A-Za-z]+)"""",
+    )
+
+    /** Events larger than this are never scanned for effort keys. */
+    private const val MAX_EVENT_SCAN_CHARS = 128 * 1024
+
     fun isValidRunId(runId: String?): Boolean = runId != null && RUN_ID.matches(runId)
 
     /** Returns validated claims, or null when the token is not a usable public run token. */
@@ -150,6 +161,51 @@ object ArenaProtocol {
             }
         }
         return found.toList()
+    }
+
+    /**
+     * Optional strength/effort tier ("high", "max", …) for the run: accessory chips
+     * first (model spans, then any span of the run), then effort keys in the event
+     * JSON. [models] excludes model chips that happen to be tier words (e.g. a
+     * model literally named "Max"). Null when the trace carries no tier — most
+     * traces today have none, and then nothing is displayed.
+     */
+    fun extractEffort(trace: JSONObject, runId: String, models: List<String> = emptyList()): String? {
+        val excluded = models.mapTo(HashSet()) { it.trim().lowercase() }
+        val events = traceEvents(trace) ?: return null
+        for (pass in 0..1) {
+            for (i in 0 until events.length()) {
+                val event = events.optJSONObject(i) ?: continue
+                if (event.optString("runId") != runId) continue
+                if (pass == 0 && spanName(event) !in MODEL_SPANS) continue
+                effortFromChips(event, excluded)?.let { return it }
+            }
+        }
+        for (i in 0 until events.length()) {
+            val event = events.optJSONObject(i) ?: continue
+            if (event.optString("runId") != runId) continue
+            effortFromJson(event, excluded)?.let { return it }
+        }
+        return null
+    }
+
+    private fun effortFromChips(event: JSONObject, excluded: Set<String>): String? {
+        val items = event.optJSONObject("style")
+            ?.optJSONObject("accessory")
+            ?.optJSONArray("items") ?: return null
+        for (j in 0 until items.length()) {
+            val text = items.optJSONObject(j)?.optString("text") ?: continue
+            val word = text.trim().lowercase()
+            if (word in EFFORT_WORDS && word !in excluded) return word
+        }
+        return null
+    }
+
+    private fun effortFromJson(event: JSONObject, excluded: Set<String>): String? {
+        val raw = event.toString()
+        if (raw.length > MAX_EVENT_SCAN_CHARS) return null
+        val word = EFFORT_PATTERN.find(raw)?.groupValues?.getOrNull(1)?.lowercase() ?: return null
+        return if (word in EFFORT_WORDS && word !in excluded) word else null
     }
 
     fun isFatalTraceStatus(status: Int): Boolean =

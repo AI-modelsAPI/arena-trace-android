@@ -30,6 +30,7 @@ class TraceClient(private val client: OkHttpClient = defaultClient()) {
         val models: List<String> = emptyList(),
         val runId: String = "",
         val error: String = "",
+        val strength: String = "",
     )
 
     /** Validate [token] for [sessionId], then poll its run's events. */
@@ -69,7 +70,10 @@ class TraceClient(private val client: OkHttpClient = defaultClient()) {
                                 lastError = "trace 响应不是 JSON"
                             } else {
                                 val models = ArenaProtocol.extractModels(json, claims.runId)
-                                if (models.isNotEmpty()) return Result(true, models, claims.runId)
+                                if (models.isNotEmpty()) {
+                                val effort = ArenaProtocol.extractEffort(json, claims.runId, models).orEmpty()
+                                return Result(true, models, claims.runId, strength = effort)
+                            }
                             }
                         }
                         ArenaProtocol.isFatalTraceStatus(res.code) ->

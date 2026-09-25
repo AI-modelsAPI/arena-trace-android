@@ -60,4 +60,14 @@ class TurnFormatTest {
         val t = Turn(1, "k1", Status.RESOLVED, listOf("a", "b"))
         assertEquals("a / b", TurnFormat.label(t))
     }
+
+    @Test
+    fun labelAppendsStrengthTierOnlyWhenPresent() {
+        val t = Turn(3, "k3", Status.RESOLVED, listOf("model-a"), strength = "high")
+        assertEquals("model-a · high", TurnFormat.label(t))
+        assertEquals("第 3 轮 · model-a · high", TurnFormat.headline(listOf(t), "model-a"))
+        // No tier → rendering unchanged anywhere.
+        assertEquals("model-a", TurnFormat.label(ok(1, "model-a")))
+        assertEquals("第 1 轮 · model-a", TurnFormat.headline(listOf(ok(1, "model-a")), "model-a"))
+    }
 }

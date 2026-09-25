@@ -44,9 +44,9 @@ class Store(context: Context) : TurnIntake.History {
 
     /** Record one observed turn (models may be empty until it resolves). */
     @Synchronized
-    override fun saveRun(sessionId: String, key: String, number: Int, models: List<String>) {
+    override fun saveRun(sessionId: String, key: String, number: Int, models: List<String>, strength: String) {
         val root = history()
-        if (HistoryLogic.putRun(root, sessionId, key, number, models)) commitHistory(root)
+        if (HistoryLogic.putRun(root, sessionId, key, number, models, strength)) commitHistory(root)
     }
 
     @Synchronized
