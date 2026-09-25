@@ -67,9 +67,9 @@
     <!-- Reply watchdog (auto refresh on error / empty reply) -->
     <string name="watchdog_title">回复监控</string>
     <string name="watchdog_switch">回复出错或空白时自动刷新</string>
-    <string name="watchdog_desc">监控当前对话：出现「Something went wrong…please try again / 出现了一些问题…请重试」等错误，或模型实际已完成但页面没有输出（刷新即可看到）时，自动刷新页面。同一对话 30 秒内最多自动刷新一次；第 3 次只在日志提醒，请手动刷新。</string>
+    <string name="watchdog_desc">监控当前对话：出现「Something went wrong…please try again / 出现了一些问题…请重试」等错误，或模型实际已完成但页面没有输出（刷新即可看到）时，自动刷新页面。只在你刚发送过消息的 2 分钟内评估，长时间不打理的旧对话不会被刷新；同一问题最多自动刷新两次，仍异常则只在日志提醒。</string>
     <string name="log_watchdog_reloading">回复异常，正在自动刷新…</string>
-    <string name="log_watchdog_nag">当前对话回复异常仍未恢复，请手动刷新（自动刷新已连续触发，暂停一次）</string>
+    <string name="log_watchdog_nag">当前对话回复异常仍未恢复，请手动刷新（自动刷新已达上限）</string>
 
     <!-- Link tab (links opened from the Arena page) -->
     <string name="tab_loading">加载中…</string>

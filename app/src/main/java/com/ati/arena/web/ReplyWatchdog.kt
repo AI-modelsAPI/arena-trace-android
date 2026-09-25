@@ -7,18 +7,18 @@ package com.ati.arena.web
  * but nothing was rendered. page-side watchdog.js reports a compact status
  * ("WATCH|{…}"); this class decides when an auto reload is allowed.
  *
+ * Tightened v2 rules:
+ *  - the page only reports within 2 minutes of real conversation activity
+ *    (send / stream growth / Stop button); this class re-checks that window;
+ *  - the same problem (same path + same error key) auto-reloads at most twice,
+ *    then nudges for a manual refresh once, then stays silent.
+ *
  * Pure Kotlin, no Android/WebView types: fully unit-tested.
  */
 object ReplyWatchdog {
 
     /** Minimum pause between two auto reloads (per page path). */
     const val COOLDOWN_MS = 30_000L
-
-    /** After this many auto refreshes for the same path, stop nagging (every 3rd). */
-    const val NAG_INTERVAL = 3
-
-    /** Auto reloads are never attempted while the page is still loading. */
-    const val RECENT_LOAD_MS = 3_000L
 
     /**
      * A task (probe, cleanup, quick send) blocks auto reload only when it started
@@ -27,10 +27,22 @@ object ReplyWatchdog {
     const val TASK_BLOCK_MS = 120_000L
 
     /**
-     * Accepts older error reports for up to 45s (the user may have scrolled past
-     * a stale error card; a reload still fixes it, so late = fine).
+     * Reports older than this many ms after the conversation's last activity are
+     * ignored: an idle conversation is never auto-refreshed.
+     */
+    const val FRESH_MS = 120_000L
+
+    /**
+     * An error report stays actionable this long (the user may have scrolled past
+     * a stale card; a reload still fixes it). Empty-reply reports go cold much
+     * faster ([STALE_EMPTY_MS]).
      */
     const val ERROR_ACCEPT_MS = 45_000L
+
+    const val STALE_EMPTY_MS = 8_000L
+
+    /** The same problem is auto-refreshed at most this many times. */
+    const val MAX_SAME_KEY_RELOADS = 2
 
     /** Error snippets from the page are capped (defence in depth for log spam). */
     const val MAX_SNIPPET_CHARS = 24
@@ -45,31 +57,35 @@ object ReplyWatchdog {
         val textLen: Int,
         /** Epoch ms when the state was first observed (page clock). */
         val at: Long,
+        /** Epoch ms of the last conversation activity (send/stream); 0 = unknown. */
+        val act: Long = 0L,
     )
 
     sealed interface Decision {
         /** Reload now. */
         data object Reload : Decision
 
-        /** Track the event (state, count, lastReloadAt); do not reload. */
+        /** Track the event (state updates); do not reload. */
         data class Track(val reason: Reason) : Decision
 
         /** A page status that doesn't call for any action — drop it silently. */
         data object Ignore : Decision
     }
 
-    enum class Reason { BUSY, TASK_RUNNING, COOLDOWN, NAG, STALE }
+    enum class Reason { BUSY, TASK_RUNNING, COOLDOWN, STALE, NAG, CAPPED }
 
     data class State(
         /** Paths already auto-refreshed at (epoch ms). */
         val lastReloadAt: Map<String, Long> = emptyMap(),
-        /** Consecutive suppressed reloads per path (for the 3rd-time nag). */
-        val counts: Map<String, Int> = emptyMap(),
+        /** Auto reloads per problem ("path|key"). */
+        val reloads: Map<String, Int> = emptyMap(),
+        /** Problems the manual-refresh nudge was already shown for. */
+        val nagged: Set<String> = emptySet(),
     )
 
     /**
      * Parse one "WATCH|{json}" line. Returns null for anything else, anything
-     * malformed, and non-agent paths. Line without the prefix → null.
+     * malformed, and non-agent paths.
      */
     fun parseLine(line: String): Status? {
         if (!line.startsWith(PREFIX)) return null
@@ -90,6 +106,7 @@ object ReplyWatchdog {
             generating = o.optBoolean("generating", false),
             textLen = o.optInt("len", 0).coerceIn(0, 1_000_000),
             at = o.optLong("at", 0L),
+            act = o.optLong("act", 0L),
         )
     }
 
@@ -113,18 +130,25 @@ object ReplyWatchdog {
         if (linkTabOpen || loading) return Decision.Track(Reason.BUSY)
         if (taskStartedAt > 0L && nowMs - taskStartedAt < TASK_BLOCK_MS) return Decision.Track(Reason.TASK_RUNNING)
 
+        // No recent conversation activity: an idle chat is never ours to fix.
+        if (status.act > 0L && nowMs - status.act > FRESH_MS) return Decision.Ignore
+
         // A streaming reply usually gets its content in the end — don't interrupt.
         if (status.generating && status.key == KEY_EMPTY) return Decision.Ignore
 
-        // Stale error reports are still actionable for a while; empty goes cold quickly.
+        // Stale reports: empty goes cold quickly, errors stay actionable longer.
         if (status.at > 0L) {
             val age = nowMs - status.at
-            val limit = if (status.key == KEY_EMPTY) 8_000L else ERROR_ACCEPT_MS
+            val limit = if (status.key == KEY_EMPTY) STALE_EMPTY_MS else ERROR_ACCEPT_MS
             if (age > limit) return Decision.Track(Reason.STALE)
         }
 
-        val count = (state.counts[status.path] ?: 0) + 1
-        if (count % NAG_INTERVAL == 0 && count > 1) return Decision.Track(Reason.NAG)
+        // Budget per problem: at most MAX_SAME_KEY_RELOADS automatic reloads,
+        // then one manual-refresh nudge, then silence.
+        val problem = status.path + '|' + status.key
+        if ((state.reloads[problem] ?: 0) >= MAX_SAME_KEY_RELOADS) {
+            return Decision.Track(if (problem in state.nagged) Reason.CAPPED else Reason.NAG)
+        }
 
         val last = state.lastReloadAt[status.path] ?: 0L
         if (last > 0L && nowMs - last < COOLDOWN_MS) return Decision.Track(Reason.COOLDOWN)
@@ -133,9 +157,19 @@ object ReplyWatchdog {
 
     /** Apply the outcome of [decide] to [state]; call on every Track/Reload. */
     fun applied(state: State, status: Status, decision: Decision, nowMs: Long): State {
-        val counts = state.counts + (status.path to (state.counts[status.path] ?: 0) + 1)
-        val last = state.lastReloadAt + (status.path to if (decision is Decision.Reload) nowMs else state.lastReloadAt[status.path] ?: 0L)
-        return State(lastReloadAt = last, counts = counts)
+        val problem = status.path + '|' + status.key
+        return when (decision) {
+            Decision.Reload -> state.copy(
+                lastReloadAt = state.lastReloadAt + (status.path to nowMs),
+                reloads = state.reloads + (problem to (state.reloads[problem] ?: 0) + 1),
+            )
+            is Decision.Track -> if (decision.reason == Reason.NAG) {
+                state.copy(nagged = state.nagged + problem)
+            } else {
+                state
+            }
+            Decision.Ignore -> state
+        }
     }
 
     const val PREFIX = "WATCH|"
