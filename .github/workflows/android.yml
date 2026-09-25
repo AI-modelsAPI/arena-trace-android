@@ -129,28 +129,41 @@ jobs:
             gh release create "$tag" dist/*.apk --title "Arena Trace ${tag}" --generate-notes
           fi
 
-          urls=""
+          # Anonymous-host mirrors; every attempt is logged into the release
+          # notes so failures stay visible without log access.
+          : > /tmp/mirror.md
           for f in dist/*.apk; do
-            url=$(curl -fsSL --max-time 180 -F "reqtype=fileupload" -F "fileToUpload=@${f}"                     https://catbox.moe/user/api.php 2>/dev/null || true)
+            base=$(basename "$f"); url=""; diag=""
+            resp=$(curl -sS --max-time 240 -F "file=@${f}" https://pixeldrain.com/api/file 2>&1 || true)
+            url=$(printf '%s' "$resp" | grep -o '"id":"[A-Za-z0-9]*"' | head -n1 | cut -d'"' -f4)
+            if [ -n "$url" ]; then url="https://pixeldrain.com/api/file/${url}?download=1"; diag="pixeldrain: OK";
+            else
+              diag="pixeldrain failed: $(printf '%s' "$resp" | head -c 120)"
+              url=$(curl -fsSL --max-time 240 -F "file=@${f}" https://0x0.st 2>/dev/null || true)
+            fi
             if [ "${url#https://}" = "$url" ]; then
-              url=$(curl -fsSL --max-time 180 -F "file=@${f}" https://0x0.st 2>/dev/null || true)
+              diag="${diag} | 0x0.st failed"
+              resp=$(curl -sS --max-time 240 -F "reqtype=fileupload" -F "fileToUpload=@${f}" https://catbox.moe/user/api.php 2>&1 || true)
+              url="$resp"; diag="${diag} | catbox: $(printf '%s' "$resp" | head -c 120)"
             fi
             if [ "${url#https://}" != "$url" ]; then
-              urls="${urls}${url}\n"
+              echo "- ${base} → ${url}" >> /tmp/mirror.md
             else
-              echo "::warning::could not mirror $f to an anonymous host"
+              echo "- ${base} → FAILED (${diag})" >> /tmp/mirror.md
             fi
           done
 
-          if [ -n "$urls" ]; then
+          if grep -q "→ http" /tmp/mirror.md; then
             gh release view "$tag" --json body --jq -r .body > /tmp/notes.md || true
             {
               echo
               echo "### 免登录直链（镜像，点开即下载）"
-              printf "%b" "$urls"
+              cat /tmp/mirror.md
             } >> /tmp/notes.md
             gh release edit "$tag" --notes-file /tmp/notes.md
-            printf "### 免登录直链\n%b" "$urls" >> "$GITHUB_STEP_SUMMARY"
+            { echo "### 免登录直链"; grep "→ http" /tmp/mirror.md; } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::no mirror host accepted the APKs"; cat /tmp/mirror.md
           fi
 
       # Compiler errors, Gradle failure summaries and failed unit tests become
