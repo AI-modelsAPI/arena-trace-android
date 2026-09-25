@@ -2,7 +2,9 @@ name: Android Build
 
 on:
   push:
-    branches: [main]
+    # arena/** = agent work branches: each push is built and tested, and the
+    # APKs are available as run artifacts before anything reaches main.
+    branches: [main, 'arena/**']
   pull_request:
     branches: [main]
   workflow_dispatch:
