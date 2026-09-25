@@ -23,6 +23,7 @@ class PageBridge(
     private val onSnoop: (payload: String) -> Unit,
     private val onResult: (reqId: String, resultJson: String) -> Unit,
     private val onLog: (line: String) -> Unit,
+    private val onWatch: (payload: String) -> Unit = {},
 ) {
     /** true = origin-restricted message channel; false = legacy JS interfaces. */
     val usesMessageChannel: Boolean = installMessageChannel()
@@ -67,6 +68,7 @@ class PageBridge(
             is BridgeMessage.Snoop -> onSnoop(m.payload)
             is BridgeMessage.Result -> onResult(m.reqId, m.payload)
             is BridgeMessage.Log -> onLog(m.line)
+            is BridgeMessage.Watch -> onWatch(m.payload)
             null -> Unit
         }
     }

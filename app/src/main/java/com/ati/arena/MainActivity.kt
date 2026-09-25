@@ -30,6 +30,7 @@ import com.ati.arena.ui.LinkTab
 import com.ati.arena.ui.TaskState
 import com.ati.arena.web.ExternalLinks
 import com.ati.arena.web.LinkPolicy
+import com.ati.arena.web.ReplyWatchdog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -78,6 +79,14 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
     private var advancedToAgent = false
     private var warmUpElapsed = 0L
 
+    // Reply watchdog: page-side watchdog.js reports error / empty-reply states;
+    // ReplyWatchdog decides when an auto reload is allowed (cooldown, nag, task
+    // guard). taskStartedAt doubles as "a task is running" for the guard.
+    private var watchdog = ReplyWatchdog.State()
+    private var linkTabOpen = false
+    private var pageLoading = false
+    private var taskStartedAt = 0L
+
     // Order matters: bridge.js defines the page → app API the others call, and
     // conversation-rename exposes ArenaConversationRename, which probe.js's
     // rename/archive actions use. All four are idempotent.
@@ -117,7 +126,10 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
             onChanged = ::onTurnsChanged,
         )
         panel = ControlPanel(this, store, this)
-        linkTab = LinkTab(this) { open -> panel.setLinkTabOpen(open) }
+        linkTab = LinkTab(this) { open ->
+            linkTabOpen = open
+            panel.setLinkTabOpen(open)
+        }
         probe = ProbeController(
             webView = webView,
             scope = lifecycleScope,
@@ -131,10 +143,12 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
                 override fun onProgress(message: String) = panel.log(message)
                 override fun onFinished(summary: String) = panel.log(summary)
                 override fun onProbeState(round: Int, maxRounds: Int, hits: Int, active: Boolean) {
+                    taskStartedAt = if (active) System.currentTimeMillis() else 0L
                     val state = TaskState.Probe(round, maxRounds, hits)
                     if (active) panel.showTask(state) else panel.finishTask(state)
                 }
                 override fun onCleanupState(archived: Int, active: Boolean) {
+                    taskStartedAt = if (active) System.currentTimeMillis() else 0L
                     val state = TaskState.Cleanup(archived)
                     if (active) panel.showTask(state) else panel.finishTask(state)
                 }
@@ -161,14 +175,23 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
             webView,
             onSnoop = ::onSnoopPayload,
             onResult = { reqId, json -> probe.deliverResult(reqId, json) },
-            onLog = { line -> runOnUiThread { if (!isDestroyed) panel.log(line) } },
+            onLog = { line ->
+                if (line.startsWith(ReplyWatchdog.PREFIX)) onWatchPayload(line)
+                else runOnUiThread { if (!isDestroyed) panel.log(line) }
+            },
+            onWatch = ::onWatchPayload,
         )
         if (!bridge.usesMessageChannel) panel.log(getString(R.string.log_legacy_bridge))
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
                 routeNavigation(view, request)
 
+            override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                pageLoading = true
+            }
+
             override fun onPageFinished(view: WebView, url: String) {
+                pageLoading = false
                 onArenaPageFinished(view, url)
             }
 
@@ -223,7 +246,9 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
 
     override fun quickSend(text: String) {
         panel.log("正在发送到当前对话…")
+        taskStartedAt = System.currentTimeMillis()
         probe.quickSend(text) { result ->
+            taskStartedAt = 0L
             panel.log(result)
             panel.flash(HudFormat.quickSendFlash(result))
         }
@@ -352,6 +377,39 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
         }
     }
 
+    // ---------------------------------------------------------------- reply watchdog
+
+    /**
+     * watchdog.js status ("WATCH|{…}", delivered as a BridgeMessage.Watch on the
+     * modern channel). The decide/track logic is pure ([ReplyWatchdog]); here we
+     * only supply live page state and perform the reload. No-op while the feature
+     * is switched off (tools page) — the switch is read fresh every time.
+     */
+    private fun onWatchPayload(line: String) {
+        val status = ReplyWatchdog.parseLine(line) ?: return
+        runOnUiThread {
+            if (isDestroyed) return@runOnUiThread
+            if (!store.loadPanelPrefs().autoRefresh) return@runOnUiThread
+            val now = System.currentTimeMillis()
+            val decision = ReplyWatchdog.decide(watchdog, status, now, linkTabOpen, pageLoading, taskStartedAt)
+            when (decision) {
+                ReplyWatchdog.Decision.Reload -> {
+                    watchdog = ReplyWatchdog.applied(watchdog, status, decision, now)
+                    panel.log(getString(R.string.log_watchdog_reloading))
+                    panel.showRecovery()
+                    webView.reload()
+                }
+                is ReplyWatchdog.Decision.Track -> {
+                    watchdog = ReplyWatchdog.applied(watchdog, status, decision, now)
+                    if (decision.reason == ReplyWatchdog.Reason.NAG) {
+                        panel.log(getString(R.string.log_watchdog_nag))
+                    }
+                }
+                ReplyWatchdog.Decision.Ignore -> Unit
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- quota
 
     /**
@@ -427,7 +485,10 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
     private companion object {
         const val ARENA_HOME = "https://arena.ai/"
         const val ARENA_AGENT = "https://arena.ai/agent"
-        val PAGE_SCRIPTS = listOf("bridge.js", "snoop.js", "conversation-rename.js", "probe.js")
+
+        // bridge.js must be first (defines the page → app API); watchdog.js polls
+        // the conversation DOM and reports through the same bridge. All idempotent.
+        val PAGE_SCRIPTS = listOf("bridge.js", "snoop.js", "conversation-rename.js", "probe.js", "watchdog.js")
         const val WARMUP_POLL_MS = 400L
         const val WARMUP_MAX_MS = 15_000L
 

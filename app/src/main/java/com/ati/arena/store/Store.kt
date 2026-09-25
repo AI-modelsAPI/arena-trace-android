@@ -75,6 +75,8 @@ class Store(context: Context) : TurnIntake.History {
         /** Prefix for hit titles, e.g. "[探针] " → "[探针] claude-opus-5-001". */
         val renamePrefix: String = "",
         val quickText: String = "",
+        /** Auto-refresh the page when the reply shows an error or stays empty. */
+        val autoRefresh: Boolean = true,
     )
 
     fun loadPanelPrefs(): PanelPrefs {
@@ -87,6 +89,7 @@ class Store(context: Context) : TurnIntake.History {
             autoRename = prefs.getBoolean(KEY_RENAME, defaults.autoRename),
             renamePrefix = ProbeLogic.sanitizePrefix(prefs.getString(KEY_RENAME_PREFIX, defaults.renamePrefix)),
             quickText = prefs.getString(KEY_QUICK_TEXT, defaults.quickText) ?: defaults.quickText,
+            autoRefresh = prefs.getBoolean(KEY_AUTO_REFRESH, defaults.autoRefresh),
         )
     }
 
@@ -98,6 +101,7 @@ class Store(context: Context) : TurnIntake.History {
             .putBoolean(KEY_RENAME, p.autoRename)
             .putString(KEY_RENAME_PREFIX, ProbeLogic.sanitizePrefix(p.renamePrefix))
             .putString(KEY_QUICK_TEXT, p.quickText)
+            .putBoolean(KEY_AUTO_REFRESH, p.autoRefresh)
             .apply()
     }
 
@@ -147,5 +151,6 @@ class Store(context: Context) : TurnIntake.History {
         const val KEY_RENAME_PREFIX = "probe_rename_prefix"
         const val KEY_SUFFIX_COUNTERS = "probe_suffix_counters"
         const val KEY_QUICK_TEXT = "quick_send_text"
+        const val KEY_AUTO_REFRESH = "auto_refresh_on_error"
     }
 }

@@ -9,4 +9,7 @@ sealed interface TaskState {
 
     /** An arithmetic-title cleanup sweep. */
     data class Cleanup(val archived: Int) : TaskState
+
+    /** The page is being reloaded because the reply errored or came back empty. */
+    data object Recovery : TaskState
 }

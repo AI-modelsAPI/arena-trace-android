@@ -111,6 +111,7 @@ class ControlPanel(
     private val quickInput: EditText = find(R.id.quick_text)
     private val quickSendButton: MaterialButton = find(R.id.quick_send)
     private val pillRefreshSwitch: MaterialSwitch = find(R.id.pill_refresh_switch)
+    private val autoRefreshSwitch: MaterialSwitch = find(R.id.auto_refresh_switch)
 
     // ---------------------------------------------------------------- state
 
@@ -129,6 +130,11 @@ class ControlPanel(
     private var linkTabOpen = false
     private var lastReloadAt = 0L
     private var reloadDialog: AlertDialog? = null
+    private var recoveryUntil = 0L
+
+    // A running auto refresh also counts as "task running" for the guard dialogs.
+    private val busy: Boolean
+        get() = task != TaskState.Idle || SystemClock.elapsedRealtime() < recoveryUntil
     private val hideProgress = Runnable {
         pill.refreshing = false
         pageProgress.animate().alpha(0f).setDuration(FADE_MS).withEndAction {
@@ -382,7 +388,7 @@ class ControlPanel(
 
     /** Every refresh control ends up here. */
     private fun requestReload() {
-        if (task == TaskState.Idle) reloadNow() else confirmReload()
+        if (!busy) reloadNow() else confirmReload()
     }
 
     private fun reloadNow() {
@@ -396,9 +402,14 @@ class ControlPanel(
     /** Refreshing mid-task would break it: ask, and stop the task first if confirmed. */
     private fun confirmReload() {
         if (reloadDialog?.isShowing == true) return
+        val message = when {
+            task is TaskState.Probe -> R.string.reload_confirm_probe
+            task is TaskState.Cleanup -> R.string.reload_confirm_cleanup
+            else -> R.string.reload_confirm_recovery
+        }
         reloadDialog = MaterialAlertDialogBuilder(activity)
             .setTitle(R.string.reload_confirm_title)
-            .setMessage(if (task is TaskState.Probe) R.string.reload_confirm_probe else R.string.reload_confirm_cleanup)
+            .setMessage(message)
             .setNegativeButton(R.string.action_cancel, null)
             .setPositiveButton(R.string.reload_confirm_ok) { _, _ ->
                 actions.stopTask()
@@ -406,6 +417,25 @@ class ControlPanel(
             }
             .setOnDismissListener { reloadDialog = null }
             .show()
+    }
+
+    /**
+     * Auto refresh: the watchdog decided the reply is broken, reload quietly.
+     * The pill shows a short "自动刷新…" flash and the page-progress bar.
+     */
+    fun showRecovery() {
+        recoveryUntil = SystemClock.elapsedRealtime() + RECOVERY_FLASH_MS
+        val prev = task
+        task = TaskState.Recovery
+        renderTaskButtons()
+        renderPill()
+        pill.postDelayed({
+            if (task === TaskState.Recovery) {
+                task = prev
+                renderTaskButtons()
+                renderPill()
+            }
+        }, RECOVERY_FLASH_MS)
     }
 
     private fun renderPill() {
@@ -424,7 +454,7 @@ class ControlPanel(
         when (task) {
             is TaskState.Probe -> menu.add(Menu.NONE, MENU_STOP, 0, R.string.menu_stop_probe)
             is TaskState.Cleanup -> menu.add(Menu.NONE, MENU_STOP, 0, R.string.menu_stop_cleanup)
-            TaskState.Idle -> {
+            TaskState.Idle, TaskState.Recovery -> {
                 menu.add(Menu.NONE, MENU_PROBE, 0, R.string.menu_probe)
                 menu.add(Menu.NONE, MENU_CLEANUP, 1, R.string.menu_cleanup)
                 menu.add(Menu.NONE, MENU_QUICK_SEND, 2, R.string.menu_quick_send)
@@ -495,7 +525,7 @@ class ControlPanel(
             when (task) {
                 is TaskState.Probe -> actions.stopTask()
                 TaskState.Idle -> startProbeFromForm()
-                is TaskState.Cleanup -> Unit
+                is TaskState.Cleanup, TaskState.Recovery -> Unit
             }
         }
     }
@@ -548,6 +578,7 @@ class ControlPanel(
                 autoRename = renameSwitch.isChecked,
                 renamePrefix = ProbeLogic.sanitizePrefix(prefixInput.text?.toString()),
                 quickText = quickInput.text?.toString().orEmpty(),
+                autoRefresh = autoRefreshSwitch.isChecked,
             ),
         )
     }
@@ -562,7 +593,7 @@ class ControlPanel(
                     close()
                     actions.startCleanup()
                 }
-                is TaskState.Probe -> Unit
+                is TaskState.Probe, TaskState.Recovery -> Unit
             }
         }
         quickInput.addTextChangedListener(afterTextChanged {
@@ -578,6 +609,8 @@ class ControlPanel(
             pill.showRefresh = checked
             if (uiPrefs.pillRefresh != checked) saveUi(uiPrefs.copy(pillRefresh = checked))
         }
+        autoRefreshSwitch.isChecked = store.loadPanelPrefs().autoRefresh
+        autoRefreshSwitch.setOnCheckedChangeListener { _, _ -> persistForm() }
     }
 
     private fun sendQuickText() {
@@ -667,6 +700,7 @@ class ControlPanel(
         const val FLASH_MS = 2500L
         const val FINISH_FLASH_MS = 4000L
         const val RELOAD_DEBOUNCE_MS = 800L
+        const val RECOVERY_FLASH_MS = 4_000L
         const val MIN_PAGE_PROGRESS = 8
         const val PROGRESS_LINGER_MS = 250L
         const val STALLED_LOAD_MS = 30_000L

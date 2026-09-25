@@ -1,4 +1,4 @@
-/* Bridge prelude — must run before snoop.js / probe.js.
+/* Bridge prelude — must run before snoop.js / probe.js / watchdog.js.
 
    Preferred transport: window.ArenaTraceMsg, injected by
    WebViewCompat.addWebMessageListener ONLY into https://arena.ai frames (other
@@ -13,7 +13,8 @@
    the same names instead, and this prelude does nothing. Idempotent. */
 (() => {
   const ch = window.ArenaTraceMsg;
-  if (!ch || typeof ch.postMessage !== 'function' || window.__ATI_BRIDGE__) return;
+  if (!ch || typeof ch.postMessage !== 'function') return;
+  if (window.__ATI_BRIDGE__) return;
   try { Object.defineProperty(window, '__ATI_BRIDGE__', { value: true }); } catch (_) { return; }
   const send = msg => { try { ch.postMessage(JSON.stringify(msg)); } catch (_) {} };
   const expose = (name, api) => {

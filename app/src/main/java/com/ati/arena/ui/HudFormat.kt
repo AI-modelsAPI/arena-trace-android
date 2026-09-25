@@ -105,6 +105,7 @@ object HudFormat {
             Tone.ACTIVE,
             busy = true,
         )
+        TaskState.Recovery -> Pill("回复异常 · 自动刷新…", Tone.ACTIVE, busy = true)
         TaskState.Idle -> {
             val model = view?.currentModels.orEmpty().joinToString(" / ")
             when {
@@ -120,6 +121,7 @@ object HudFormat {
     fun finishedFlash(task: TaskState): String? = when (task) {
         is TaskState.Probe -> "探针结束 · 命中 ${task.hits}"
         is TaskState.Cleanup -> "清理完成 · 已归档 ${task.archived}"
+        TaskState.Recovery -> null
         TaskState.Idle -> null
     }
 

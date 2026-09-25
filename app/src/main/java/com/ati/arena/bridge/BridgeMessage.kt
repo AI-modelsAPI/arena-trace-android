@@ -17,10 +17,14 @@ sealed interface BridgeMessage {
     /** Human-readable progress line. */
     data class Log(val line: String) : BridgeMessage
 
+    /** watchdog.js: {"k","path","generating","len","at"} status of the open conversation. */
+    data class Watch(val payload: String) : BridgeMessage
+
     companion object {
         const val MAX_MESSAGE_CHARS = 4 * 1024 * 1024
         const val MAX_REQ_ID_CHARS = 128
         const val MAX_LOG_CHARS = 500
+        const val WATCH_PREFIX = "WATCH|"
 
         fun parse(raw: String?): BridgeMessage? {
             if (raw.isNullOrEmpty() || raw.length > MAX_MESSAGE_CHARS) return null
@@ -32,7 +36,10 @@ sealed interface BridgeMessage {
                     val id = o.opt("id") as? String
                     if (id.isNullOrEmpty() || id.length > MAX_REQ_ID_CHARS) null else Result(id, payload)
                 }
-                "log" -> payload.trim().takeIf { it.isNotEmpty() }?.let { Log(it.take(MAX_LOG_CHARS)) }
+                "log" -> payload.trim().takeIf { it.isNotEmpty() }?.let { line ->
+                    if (line.startsWith(WATCH_PREFIX)) Watch(line.take(WATCH_PREFIX.length + MAX_LOG_CHARS)) else Log(line.take(MAX_LOG_CHARS))
+                }
+                "watch" -> Watch(payload.take(MAX_LOG_CHARS))
                 else -> null
             }
         }

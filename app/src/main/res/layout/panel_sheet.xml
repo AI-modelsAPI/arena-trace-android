@@ -530,6 +530,35 @@
                     android:text="@string/pill_refresh_switch"
                     android:textColor="@color/on_surface"
                     android:textSize="14sp" />
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:layout_marginTop="8dp"
+                    android:layout_marginBottom="8dp"
+                    android:background="@color/outline" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/watchdog_title"
+                    android:textAppearance="@style/TextAppearance.ArenaTrace.Section" />
+
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/auto_refresh_switch"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="44dp"
+                    android:text="@string/watchdog_switch"
+                    android:textColor="@color/on_surface"
+                    android:textSize="14sp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="4dp"
+                    android:text="@string/watchdog_desc"
+                    android:textAppearance="@style/TextAppearance.ArenaTrace.Caption" />
             </LinearLayout>
         </androidx.core.widget.NestedScrollView>
     </FrameLayout>

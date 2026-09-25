@@ -60,8 +60,16 @@
     <string name="reload_confirm_title">刷新页面？</string>
     <string name="reload_confirm_probe">探针正在运行，刷新会中断本次探针。</string>
     <string name="reload_confirm_cleanup">清理正在进行，刷新会中断本次清理。</string>
+    <string name="reload_confirm_recovery">页面刚刚因回复异常自动刷新过，确定再刷新一次？</string>
     <string name="reload_confirm_ok">停止并刷新</string>
     <string name="action_cancel">取消</string>
+
+    <!-- Reply watchdog (auto refresh on error / empty reply) -->
+    <string name="watchdog_title">回复监控</string>
+    <string name="watchdog_switch">回复出错或空白时自动刷新</string>
+    <string name="watchdog_desc">监控当前对话：出现「Something went wrong…please try again / 出现了一些问题…请重试」等错误，或模型实际已完成但页面没有输出（刷新即可看到）时，自动刷新页面。同一对话 30 秒内最多自动刷新一次；第 3 次只在日志提醒，请手动刷新。</string>
+    <string name="log_watchdog_reloading">回复异常，正在自动刷新…</string>
+    <string name="log_watchdog_nag">当前对话回复异常仍未恢复，请手动刷新（自动刷新已连续触发，暂停一次）</string>
 
     <!-- Link tab (links opened from the Arena page) -->
     <string name="tab_loading">加载中…</string>
