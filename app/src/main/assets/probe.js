@@ -238,6 +238,32 @@
     button.click();
     return { sent: true };
   }
+  // Any conversation page: /agent/{id} or /c/{id} (the page id need not equal
+  // the stream session id — the native side resolves aliases).
+  const pathSession = () => location.pathname.match(/^\/(?:agent|c)\/([a-zA-Z0-9-]{1,128})\/?$/)?.[1] || null;
+  // 会话探针: probe INSIDE the open conversation — send one arithmetic prompt
+  // into it so the snoop/trace pipeline re-detects the routed model. Unlike
+  // send()/sendToCurrent this never creates extra state and never renames;
+  // on the blank new-chat page it falls back to send() (there is no
+  // conversation to probe yet).
+  async function probeInSession(args) {
+    const prompt = String(args?.prompt || '');
+    if (!isOwnPrompt(prompt)) throw Error('探针只发送算式提示');
+    if (location.origin !== ARENA) throw Error('已离开 Arena');
+    if (agentPath() && !session()) return send(args); // blank chat: create first
+    if (isGenerating()) throw Error('当前回复仍在生成，已停止');
+    const editor = composer();
+    if (!editor) throw Error('未找到输入框');
+    if (!fillPrompt(editor, prompt)) throw Error('输入内容失败；未发送');
+    const button = await waitFor(() => findSend(editor), '发送按钮不可用；未发送');
+    if (editorText(editor) !== prompt) throw Error('输入已变化；未发送');
+    const before = pathSession();
+    button.click();
+    let id = before;
+    try { id = (await waitFor(() => pathSession(), '发送后未确认会话 id', 30000)) || before || id; }
+    catch (_) { /* keep the pre-send id: the send already happened */ }
+    return { session: id || '' };
+  }
 
   // ---- sidebar: open/close, full scan, reveal, archive ----
   //
@@ -476,7 +502,7 @@
   }
 
   const ACTIONS = {
-    precheck, newChat, ensureAgentMode, send, sendToCurrent,
+    precheck, newChat, ensureAgentMode, send, sendToCurrent, probeInSession,
     sidebarState, sidebarScan, sidebarList, collapseSidebar, archiveFromSidebar, rename, archive,
     ensureSidebarOpen: async () => ensureSidebarOpen(),
     revealSidebarItem: async args => { await revealSidebarItem(args); return { found: true }; },

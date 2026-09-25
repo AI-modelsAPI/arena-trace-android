@@ -54,6 +54,8 @@ class ControlPanel(
         fun startCleanup()
         fun stopTask()
         fun quickSend(text: String)
+        /** 会话探针: probe the currently open conversation (never renames it). */
+        fun probeSession()
         fun navigate(nav: Nav)
     }
 
@@ -391,6 +393,19 @@ class ControlPanel(
         if (!busy) reloadNow() else confirmReload()
     }
 
+    /**
+     * 会话探针: the probe sends a REAL message into the open conversation, so
+     * it asks first — and the dialog spells out that the name stays untouched.
+     */
+    private fun requestSessionProbe() {
+        MaterialAlertDialogBuilder(activity)
+            .setTitle(R.string.probe_session_confirm_title)
+            .setMessage(R.string.probe_session_confirm_message)
+            .setNegativeButton(R.string.action_cancel, null)
+            .setPositiveButton(R.string.probe_session_confirm_ok) { _, _ -> actions.probeSession() }
+            .show()
+    }
+
     private fun reloadNow() {
         val now = SystemClock.elapsedRealtime()
         if (now - lastReloadAt < RELOAD_DEBOUNCE_MS) return // accidental double tap
@@ -456,16 +471,18 @@ class ControlPanel(
             is TaskState.Cleanup -> menu.add(Menu.NONE, MENU_STOP, 0, R.string.menu_stop_cleanup)
             TaskState.Idle, TaskState.Recovery -> {
                 menu.add(Menu.NONE, MENU_PROBE, 0, R.string.menu_probe)
-                menu.add(Menu.NONE, MENU_CLEANUP, 1, R.string.menu_cleanup)
-                menu.add(Menu.NONE, MENU_QUICK_SEND, 2, R.string.menu_quick_send)
+                menu.add(Menu.NONE, MENU_PROBE_SESSION, 1, R.string.menu_probe_session)
+                menu.add(Menu.NONE, MENU_CLEANUP, 2, R.string.menu_cleanup)
+                menu.add(Menu.NONE, MENU_QUICK_SEND, 3, R.string.menu_quick_send)
             }
         }
-        menu.add(Menu.NONE, MENU_RELOAD, 3, R.string.menu_reload)
-        menu.add(Menu.NONE, MENU_PANEL, 4, R.string.menu_panel)
+        menu.add(Menu.NONE, MENU_RELOAD, 4, R.string.menu_reload)
+        menu.add(Menu.NONE, MENU_PANEL, 5, R.string.menu_panel)
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 MENU_STOP -> actions.stopTask()
                 MENU_PROBE -> startProbeFromForm()
+                MENU_PROBE_SESSION -> requestSessionProbe()
                 MENU_CLEANUP -> actions.startCleanup()
                 MENU_QUICK_SEND -> sendQuickText()
                 MENU_RELOAD -> requestReload()
@@ -601,6 +618,7 @@ class ControlPanel(
             persistForm()
         })
         quickSendButton.setOnClickListener { sendQuickText() }
+        find<View>(R.id.probe_session).setOnClickListener { requestSessionProbe() }
         find<View>(R.id.nav_back).setOnClickListener { actions.navigate(Nav.BACK) }
         find<View>(R.id.nav_forward).setOnClickListener { actions.navigate(Nav.FORWARD) }
         find<View>(R.id.nav_reload).setOnClickListener { requestReload() }
@@ -712,5 +730,6 @@ class ControlPanel(
         const val MENU_QUICK_SEND = 4
         const val MENU_RELOAD = 5
         const val MENU_PANEL = 6
+        const val MENU_PROBE_SESSION = 7
     }
 }

@@ -272,6 +272,19 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
         }
     }
 
+    /** 会话探针: probe the open conversation in place; its name is never touched. */
+    override fun probeSession() {
+        panel.log("会话探针 · 正在发送（不改会话名）…")
+        taskStartedAt = System.currentTimeMillis()
+        probe.probeSession { result ->
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                taskStartedAt = 0L
+                panel.log(result)
+            }
+        }
+    }
+
     override fun navigate(nav: ControlPanel.Nav) {
         when (nav) {
             ControlPanel.Nav.BACK -> if (webView.canGoBack()) webView.goBack()

@@ -105,6 +105,43 @@ class ProbeController(
 
     // ---------------------------------------------------------------- probe
 
+    /**
+     * 会话探针: probe the conversation ON SCREEN — send one arithmetic prompt
+     * into it and report the model the snoop/trace pipeline resolves. Use case:
+     * the routed model is not the expected one; re-detect in place. Unlike the
+     * multi-round probe this NEVER renames the conversation, touches the
+     * sidebar, or advances to a new chat (a blank /agent page simply sends a
+     * first message there). Shares [isRunning] with probe/cleanup so only one
+     * page driver works at a time; [stop] cancels it.
+     */
+    fun probeSession(onResult: (String) -> Unit) {
+        if (isRunning) { onResult("任务运行中，请先停止再探测"); return }
+        job = scope.launch(Dispatchers.Main) {
+            listener.onProbeState(1, 1, 0, true)
+            try {
+                val prompt = ProbeLogic.randomPrompt()
+                onResult("会话探针 · 发送 \"$prompt\"…")
+                val sessionId = rpc("probeInSession", JSONObject().put("prompt", prompt)).optString("session")
+                if (sessionId.isEmpty()) {
+                    onResult("会话探针 · 已发送；未拿到会话 id，识别结果见面板日志")
+                    return@launch
+                }
+                val models = awaitModels(sessionId)
+                if (models.isEmpty()) {
+                    onResult("会话探针 · 暂未识别到模型（会话名未改动）")
+                } else {
+                    onResult("会话探针 · 识别模型：" + models.joinToString("、") + "（会话名未改动）")
+                }
+            } catch (_: CancellationException) {
+                onResult("会话探针已停止")
+            } catch (e: Exception) {
+                onResult("会话探针失败：" + (e.message ?: "未知错误"))
+            } finally {
+                listener.onProbeState(0, 1, 0, false)
+            }
+        }
+    }
+
     fun start(cfg: Config) {
         if (isRunning) { listener.onProgress("已有任务在运行"); return }
         if (cfg.targets.isEmpty()) { listener.onProgress("请先填写目标模型"); return }
