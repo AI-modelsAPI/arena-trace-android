@@ -15,7 +15,7 @@
  */
 (() => {
   // Re-injection guard: onPageFinished can fire more than once per document.
-  const VERSION = 4; // /c/{id} conversation links are first-class (cleanup was blind to them)
+  const VERSION = 5; // longer draft-guard dumps; skip reCAPTCHA/aria-hidden pseudo editors
   if ((globalThis.ArenaProbe?.version || 0) >= VERSION) return;
   const ARENA = 'https://arena.ai';
   const NEW_CHAT_LABELS = ['New Chat', 'New chat', '新建聊天', '新对话', '新建对话'];
@@ -35,10 +35,15 @@
   const labelOf = e => ((e?.getAttribute?.('aria-label') || e?.placeholder || '') + ' ' + (e?.textContent || '')).trim();
   const isSearch = e => /search|搜索|查找/i.test(labelOf(e)) || e?.closest?.('[data-sidebar]');
 
+  // Things that match editor selectors but can never hold a human draft:
+  // reCAPTCHA's hidden response textarea and anything inside aria-hidden UI.
+  const nonInput = e => e?.closest?.('.g-recaptcha,[class*="recaptcha"],[aria-hidden="true"]')
+    || /^g-recaptcha/.test(String(e?.name || e?.id || ''));
+
   function editors() {
     const nodes = [];
     for (const sel of ['[contenteditable="true"]', 'textarea', '[role="textbox"]']) nodes.push(...document.querySelectorAll(sel));
-    return [...new Set(nodes)].filter(e => visible(e) && !isSearch(e));
+    return [...new Set(nodes)].filter(e => visible(e) && !isSearch(e) && !nonInput(e));
   }
   function placeholderText(e) {
     const own = e.getAttribute?.('data-placeholder') || e.getAttribute?.('aria-placeholder') || '';
@@ -77,8 +82,8 @@
     const suspects = main ? [main] : all;
     const offender = suspects.find(e => { const t = editorText(e); return t && !(allowPrompt && isOwnPrompt(t)); });
     if (offender) {
-      const dump = all.map(e => `${String(e.tagName || '?').toLowerCase()}${e.id ? '#' + e.id : ''}:"${editorText(e).slice(0, 10)}…"`).join(' ');
-      throw Error(`输入框有未发送内容（"${editorText(offender).slice(0, 24)}" · 共${all.length}个输入区 ${dump}），已停止；不会覆盖草稿`);
+      const dump = all.map(e => `${String(e.tagName || '?').toLowerCase()}${e.id ? '#' + e.id : ''}:"${editorText(e).slice(0, 30)}…"`).join(' ');
+      throw Error(`输入框有未发送内容（"${editorText(offender).slice(0, 60)}" · 共${all.length}个输入区 ${dump}），已停止；不会覆盖草稿`);
     }
   }
   function newChatControl() {

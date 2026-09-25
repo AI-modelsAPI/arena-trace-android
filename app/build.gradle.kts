@@ -13,8 +13,8 @@ android {
         applicationId = "com.ati.arena"
         minSdk = 26
         targetSdk = 34
-        versionCode = 17
-        versionName = "0.5.9"
+        versionCode = 18
+        versionName = "0.6.0"
     }
 
     // Fixed release signing (keystore lives in GitHub Secrets; CI decodes it and
