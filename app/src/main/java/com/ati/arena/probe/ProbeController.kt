@@ -276,11 +276,24 @@ class ProbeController(
             var verified: Scan? = null   // a scan that found nothing left to do
             listener.onCleanupState(0, true)
             try {
+                val startedAt = System.currentTimeMillis()
                 for (pass in 1..MAX_PASSES) {
                     ensureActive()
+                    if (System.currentTimeMillis() - startedAt > CLEANUP_TIME_BUDGET_MS) {
+                        listener.onProgress("清理已运行较久，提前收尾（可再点一次清理继续）")
+                        break
+                    }
                     listener.onProgress(if (pass == 1) "扫描侧栏（含懒加载的旧对话）…" else "复查侧栏（第 $pass 遍）…")
                     val scan = scanSidebar()
                     incomplete = !scan.complete
+                    if (scan.items.isEmpty()) {
+                        // Distinct from "scanned N and none need archiving": the
+                        // page coughed up zero recognizable rows — almost always
+                        // a structural change on Arena's side, and grinding on
+                        // would only spin. Say so in plain words and stop fast.
+                        listener.onProgress("侧栏扫描完成：未识别到对话链接（0 项）；若侧栏非空，网页结构可能已更新")
+                        verified = scan; break
+                    }
                     val exhausted = attempts.filterValues { it >= MAX_ATTEMPTS_PER_CHAT }.keys
                     val plan = ProbeLogic.planCleanup(scan.items, scan.current, done + exhausted)
                     if (plan.isEmpty) { verified = scan; break }
@@ -473,6 +486,8 @@ class ProbeController(
         const val MAX_PASSES = 3
         const val MAX_ATTEMPTS_PER_CHAT = 2
         const val MAX_CONSECUTIVE_FAILURES = 3
+        /** Whole-sweep budget: beyond this the current plan is left for the next tap. */
+        const val CLEANUP_TIME_BUDGET_MS = 12L * 60_000L
         const val ARCHIVE_GAP_MS = 500L
         const val PASS_GAP_MS = 800L
         const val RETRY_DELAY_MS = 1_200L

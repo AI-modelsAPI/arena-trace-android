@@ -1,10 +1,10 @@
 /* Rename through Arena's own UI. No private API calls, tokens or guessed endpoints. */
 (() => {
   // Re-injection guard: a second copy would reset `busy` mid-operation.
-  const VERSION=2;
+  const VERSION=3; // /c/{id} conversation links are first-class
   if((globalThis.ArenaConversationRename?.version||0)>=VERSION)return;
   let busy=false;
-  const sessionFromPath=path=>path.match(/^\/agent\/([a-zA-Z0-9-]{1,128})\/?$/)?.[1]||null;
+  const sessionFromPath=path=>path.match(/^\/(?:agent|c)\/([a-zA-Z0-9-]{1,128})\/?$/)?.[1]||null;
   function validate(sessionId,model){
     if(typeof sessionId!=='string'||!/^[a-zA-Z0-9-]{1,128}$/.test(sessionId))throw Error('请先进入一个已保存的 Arena 对话');
     if(typeof model!=='string'||!model.trim())throw Error('尚未识别模型，不能自动重命名');
