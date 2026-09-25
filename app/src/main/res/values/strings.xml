@@ -42,6 +42,8 @@
     <string name="quick_send">发送到当前对话</string>
     <string name="quick_note">也可以长按悬浮窗，选择「快捷发送」</string>
     <string name="probe_session">会话探针</string>
+    <string name="probe_session_title">会话探针</string>
+    <string name="probe_session_desc">自动探针的简版：随机发一条算式到当前打开的对话，识别实际路由的模型；不会开新对话，也不会改会话名</string>
     <string name="probe_session_confirm_title">发送会话探针？</string>
     <string name="probe_session_confirm_message">会向当前对话发送一条算式消息（消耗额度），发送后自动重新识别路由的模型。不会改动会话名。</string>
     <string name="probe_session_confirm_ok">发送</string>

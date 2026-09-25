@@ -385,6 +385,36 @@
                     android:text="@string/probe_cost_note"
                     android:textColor="@color/on_surface_muted"
                     android:textSize="11sp" />
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:layout_marginTop="12dp"
+                    android:layout_marginBottom="12dp"
+                    android:background="@color/outline" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/probe_session_title"
+                    android:textAppearance="@style/TextAppearance.ArenaTrace.Section" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="@string/probe_session_desc"
+                    android:textAppearance="@style/TextAppearance.ArenaTrace.Caption" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/probe_session"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="@string/probe_session"
+                    app:icon="@drawable/ic_play"
+                    app:iconGravity="textStart" />
             </LinearLayout>
         </androidx.core.widget.NestedScrollView>
 
@@ -459,34 +489,15 @@
                         android:textSize="14sp" />
                 </com.google.android.material.textfield.TextInputLayout>
 
-                <LinearLayout
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/quick_send"
+                    style="@style/Widget.Material3.Button.TonalButton"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="6dp"
-                    android:orientation="horizontal">
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/quick_send"
-                        style="@style/Widget.Material3.Button.TonalButton"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:layout_marginEnd="4dp"
-                        android:text="@string/quick_send"
-                        app:icon="@drawable/ic_send"
-                        app:iconGravity="textStart" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/probe_session"
-                        style="@style/Widget.Material3.Button.TonalButton"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:layout_marginStart="4dp"
-                        android:text="@string/probe_session"
-                        app:icon="@drawable/ic_play"
-                        app:iconGravity="textStart" />
-                </LinearLayout>
+                    android:text="@string/quick_send"
+                    app:icon="@drawable/ic_send"
+                    app:iconGravity="textStart" />
 
                 <TextView
                     android:layout_width="match_parent"
