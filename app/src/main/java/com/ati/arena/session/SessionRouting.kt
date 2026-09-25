@@ -40,18 +40,19 @@ object SessionRouting {
      * @param newChatSession conversation already adopted for the new-chat page, if any
      * @param isKnown        whether a conversation was seen before (tracked or stored)
      *
-     * On the new-chat page only ONE conversation is accepted: the first one not
-     * seen before (the chat being created). A late token from the chat the user
-     * just left is "known" and therefore rejected there.
+     * On a CONVERSATION page every stream is accepted, even one with an id that
+     * neither matches the page nor was seen before. Arena pairs conversation
+     * pages (/agent/{id}, /c/{evalId}) with stream session ids that do NOT have
+     * to be equal, and a stream may also rotate its id between turns; attribution
+     * always follows the stream URL's own session id, so each run still lands in
+     * its own conversation's log. "Not on screen" confusion is prevented by that
+     * attribution, not by rejecting tokens here (rejecting is what used to drop
+     * every turn after the first).
      *
-     * On a CONVERSATION page any stream that belongs to a conversation we already
-     * know (live or stored) is accepted, even when the page id and stream id
-     * differ — Arena has used both /agent/{id} and /c/{evalId} URL forms, and the
-     * two ids are not guaranteed identical. Attribution always follows the stream
-     * URL's own session id, so a known late stream is attributed to its own chat,
-     * which is correct. An UNKNOWN session on a conversation page is rejected:
-     * streams only become known through the new-chat adoption or an exact id
-     * match, so this can't smuggle a foreign chat in.
+     * On the NEW-CHAT page only ONE conversation is adopted: the first stream not
+     * seen before (the chat being created), or — after adoption — exactly that
+     * conversation. A late token replayed from the chat the user just left is
+     * "known" and therefore rejected there.
      */
     fun accepts(
         streamSession: String,
@@ -62,7 +63,7 @@ object SessionRouting {
         if (!HistoryLogic.isValidSessionId(streamSession)) return false
         val pageSession = HistoryLogic.sessionFromPath(pagePath)
         return when {
-            pageSession != null -> pageSession == streamSession || isKnown(streamSession)
+            pageSession != null -> true
             !isNewChatPath(pagePath) -> false
             newChatSession != null -> newChatSession == streamSession
             else -> !isKnown(streamSession)

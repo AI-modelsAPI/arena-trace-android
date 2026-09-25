@@ -181,8 +181,15 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
             onSnoop = ::onSnoopPayload,
             onResult = { reqId, json -> probe.deliverResult(reqId, json) },
             onLog = { line ->
-                if (line.startsWith(ReplyWatchdog.PREFIX)) onWatchPayload(line)
-                else runOnUiThread { if (!isDestroyed) panel.log(line) }
+                when {
+                    // watchdog.js path push: catches SPA navigations (replaceState,
+                    // sidebar switches) that doUpdateVisitedHistory never delivers.
+                    line.startsWith(PATH_PREFIX) -> runOnUiThread {
+                        if (!isDestroyed) onPathChanged(line.removePrefix(PATH_PREFIX).trim())
+                    }
+                    line.startsWith(ReplyWatchdog.PREFIX) -> onWatchPayload(line)
+                    else -> runOnUiThread { if (!isDestroyed) panel.log(line) }
+                }
             },
             onWatch = ::onWatchPayload,
         )
@@ -323,7 +330,9 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
         ) {
             displaySession = sessionId
         }
-        if (sessionId == displaySession) refreshModelDisplay()
+        // Turn data always lives under the STREAM session id; the page's own id
+        // (which may be a /c/{evalId} alias) resolves to it through the intake.
+        if (intake.conversationFor(displaySession) == sessionId) refreshModelDisplay()
     }
 
     /** Render purely from (displaySession, its turns, stored history). */
@@ -490,6 +499,8 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
     private companion object {
         const val ARENA_HOME = "https://arena.ai/"
         const val ARENA_AGENT = "https://arena.ai/agent"
+        // watchdog.js emits "PATH|<pathname>" whenever the in-page URL changes.
+        const val PATH_PREFIX = "PATH|"
 
         // bridge.js must be first (defines the page → app API); watchdog.js polls
         // the conversation DOM and reports through the same bridge. All idempotent.

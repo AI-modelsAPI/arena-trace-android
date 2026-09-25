@@ -218,6 +218,10 @@
     if (path !== lastPath) { // SPA conversation switch: never carry verdicts over
       lastPath = path;
       resetAccumulators();
+      // Tell the native shell: doUpdateVisitedHistory misses replaceState and
+      // some sidebar navigations, so the panel would otherwise keep showing the
+      // previous conversation's log.
+      try { ArenaProbeBridge.onLog('PATH|' + path); } catch (_) {}
       lastRawLen = -1; prevRawLen = -1;
     }
     const now = Date.now();

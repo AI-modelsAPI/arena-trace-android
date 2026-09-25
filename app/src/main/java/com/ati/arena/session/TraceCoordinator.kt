@@ -32,14 +32,29 @@ class TraceCoordinator(
 ) {
     private val gate = Semaphore(maxConcurrent)
     private val inFlight = HashMap<String, Job>()
+    // Consecutive identical lines are collapsed (streams replay many tokens).
+    private var lastLogged: String? = null
+
+    private fun log(line: String) {
+        if (line == lastLogged) return
+        lastLogged = line
+        onLog(line)
+    }
 
     /** Handle one captured token. Main thread only. */
     fun onSnoop(event: SessionRouting.SnoopEvent, fallbackPagePath: String?) {
         when (val action = intake.onToken(event, fallbackPagePath) { inFlight[it]?.isActive == true }) {
-            TurnIntake.Action.Ignored, is TurnIntake.Action.Known -> Unit
-            is TurnIntake.Action.Updated -> onChanged(action.sessionId)
+            is TurnIntake.Action.Ignored -> when (action.reason) {
+                TurnIntake.IgnoreReason.ROUTING -> log("忽略：令牌不属于当前对话页")
+                TurnIntake.IgnoreReason.TOKEN -> log("忽略：不是运行令牌（结构不符）")
+            }
+            is TurnIntake.Action.Known -> Unit
+            is TurnIntake.Action.Updated -> {
+                log("第 ${action.turn.number} 轮 · ${action.turn.note.ifEmpty { "令牌不可用" }}")
+                onChanged(action.sessionId)
+            }
             is TurnIntake.Action.Fetch -> {
-                onLog("第 ${action.turn.number} 轮 · 已截获运行令牌，解析模型中")
+                log("第 ${action.turn.number} 轮 · 已截获运行令牌，解析模型中")
                 launchFetch(action)
                 onChanged(action.sessionId)
             }
@@ -60,9 +75,9 @@ class TraceCoordinator(
                 val turn = intake.onTraceResult(action.sessionId, key, if (result.ok) result.models else emptyList(), result.error)
                 if (turn != null) {
                     if (turn.status == TurnTracker.Status.RESOLVED) {
-                        onLog("第 ${turn.number} 轮 · 模型: " + turn.models.joinToString("、"))
+                        log("第 ${turn.number} 轮 · 模型: " + turn.models.joinToString("、"))
                     } else if (turn.status == TurnTracker.Status.FAILED) {
-                        onLog("第 ${turn.number} 轮 · 未能解析模型（${turn.note.ifEmpty { result.error ?: "未知原因" }}）")
+                        log("第 ${turn.number} 轮 · 未能解析模型（${turn.note.ifEmpty { result.error ?: "未知原因" }}）")
                     }
                 }
                 onChanged(action.sessionId)

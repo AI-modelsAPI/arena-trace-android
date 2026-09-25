@@ -13,9 +13,13 @@ import com.ati.arena.store.HistoryLogic
  *
  * All the "turn log shows the wrong models after switching chats" defects are
  * handled here:
- *  - tokens from a conversation that is not on screen are ignored ([SessionRouting]);
+ *  - tokens captured on non-conversation pages are ignored ([SessionRouting]);
+ *  - attribution follows the stream URL's session id, so interleaved streams of
+ *    different conversations never end up in one conversation's log;
  *  - a run is identified by its run key, so repeated/replayed/interleaved tokens
  *    never create phantom turns and never cancel each other;
+ *  - a conversation page whose id differs from its stream id is aliased to the
+ *    stream session by the first NEW run seen on it;
  *  - every conversation is seeded from its own persisted turns before use.
  */
 class TurnIntake(
@@ -31,9 +35,18 @@ class TurnIntake(
         fun saveRun(sessionId: String, key: String, number: Int, models: List<String>)
     }
 
+    /** Why a token produced no action. Content-free, safe to log. */
+    enum class IgnoreReason {
+        /** The token was captured on a page that may not belong to a conversation. */
+        ROUTING,
+
+        /** Not a run token (raw-JWT fallback junk, malformed payload, …). */
+        TOKEN,
+    }
+
     sealed interface Action {
-        /** Not for the conversation on screen, or not a usable token. */
-        data object Ignored : Action
+        /** Not for a conversation on screen, or not a usable token. */
+        data class Ignored(val reason: IgnoreReason) : Action
 
         /** Turn already known / being fetched — nothing to do. */
         data class Known(val sessionId: String, val turn: Turn) : Action
@@ -62,6 +75,17 @@ class TurnIntake(
     private val lastAttemptAt = HashMap<String, Long>()
     private val liveSessions = HashSet<String>()
 
+    /**
+     * Page conversation id → stream session id. Arena's conversation pages
+     * (/c/{evalId}, and possibly /agent/{id}) can carry an id that differs from
+     * the id in the realtime stream URL, while all turn data is attributed to
+     * the stream id. The first token captured ON a conversation page records the
+     * mapping, so the panel can show the page conversation's log by looking up
+     * its stream conversation. In-memory only: a fresh app learns the alias from
+     * the next captured token (aliases are never persisted).
+     */
+    private val aliases = HashMap<String, String>()
+
     /** Conversation adopted for the current new-chat page (see [SessionRouting.accepts]). */
     var newChatSession: String? = null
         private set
@@ -69,6 +93,29 @@ class TurnIntake(
     /** Call when the page path CHANGES; entering the new-chat page starts a fresh adoption. */
     fun onNavigate(path: String?) {
         if (SessionRouting.isNewChatPath(path)) newChatSession = null
+    }
+
+    /**
+     * Resolve a (possibly page) conversation id to the id that owns its turn
+     * data — itself, unless a stream captured on its page recorded an alias.
+     * Follows at most a few hops, cycle-safe.
+     */
+    fun conversationFor(sessionId: String): String {
+        var current = sessionId
+        var hops = 0
+        while (hops < 4) {
+            val next = aliases[current] ?: return current
+            if (next == current) return current
+            current = next
+            hops++
+        }
+        return current
+    }
+
+    /** Record [pageSession] → [streamSession] when the two differ. */
+    private fun alias(pageSession: String, streamSession: String) {
+        if (pageSession == streamSession || aliases.size >= MAX_ALIAS_ENTRIES) return
+        aliases[pageSession] = streamSession
     }
 
     private fun isKnown(sessionId: String): Boolean =
@@ -95,8 +142,11 @@ class TurnIntake(
         inFlight: (key: String) -> Boolean,
     ): Action {
         val page = event.pagePath ?: fallbackPagePath
-        if (!SessionRouting.accepts(event.sessionId, page, newChatSession, ::isKnown)) return Action.Ignored
-        val claims = ArenaProtocol.inspectToken(event.token, event.sessionId) ?: return Action.Ignored
+        if (!SessionRouting.accepts(event.sessionId, page, newChatSession, ::isKnown)) {
+            return Action.Ignored(IgnoreReason.ROUTING)
+        }
+        val claims = ArenaProtocol.inspectToken(event.token, event.sessionId)
+            ?: return Action.Ignored(IgnoreReason.TOKEN)
         val sessionId = event.sessionId
         if (SessionRouting.isNewChatPath(page) && newChatSession == null) newChatSession = sessionId
         ensureSeeded(sessionId)
@@ -104,7 +154,14 @@ class TurnIntake(
 
         val key = HistoryLogic.runKey(claims.runId)
         val (turn, isNew) = turns.onRun(sessionId, key)
-        if (isNew) persist(sessionId, turn)
+        if (isNew) {
+            persist(sessionId, turn)
+            // A conversation page may carry a different id than its stream: map
+            // the page id to the stream id so the UI resolves turns by either id.
+            // Only a NEW turn may claim the page — a replayed/known run is more
+            // likely a late stream of the chat the user just left.
+            HistoryLogic.sessionFromPath(page)?.let { alias(it, sessionId) }
+        }
 
         if (turn.status == Status.RESOLVED) return Action.Known(sessionId, turn)
         if (inFlight(key)) return Action.Known(sessionId, turn)
@@ -137,11 +194,12 @@ class TurnIntake(
         }
     }
 
-    /** Current models of a conversation (live turns first, then history). */
+    /** Current models of a conversation (live turns first, then history). Aliases resolve. */
     fun modelsFor(sessionId: String): List<String> {
-        ensureSeeded(sessionId)
-        return turns.currentModels(sessionId).ifEmpty {
-            runCatching { history.modelsFor(sessionId) }.getOrDefault(emptyList())
+        val id = conversationFor(sessionId)
+        ensureSeeded(id)
+        return turns.currentModels(id).ifEmpty {
+            runCatching { history.modelsFor(id) }.getOrDefault(emptyList())
         }
     }
 
@@ -149,17 +207,18 @@ class TurnIntake(
         if (!HistoryLogic.isValidSessionId(sessionId)) {
             return SessionView(sessionId, emptyList(), emptyList(), "", routed = false, restored = false)
         }
-        ensureSeeded(sessionId)
-        val list = turns.turns(sessionId)
-        val live = turns.currentModels(sessionId)
-        val models = live.ifEmpty { runCatching { history.modelsFor(sessionId) }.getOrDefault(emptyList()) }
+        val id = conversationFor(sessionId)
+        ensureSeeded(id)
+        val list = turns.turns(id)
+        val live = turns.currentModels(id)
+        val models = live.ifEmpty { runCatching { history.modelsFor(id) }.getOrDefault(emptyList()) }
         return SessionView(
             sessionId = sessionId,
             turns = list,
             currentModels = models,
-            firstModel = turns.firstModel(sessionId),
-            routed = turns.isRouted(sessionId),
-            restored = models.isNotEmpty() && sessionId !in liveSessions,
+            firstModel = turns.firstModel(id),
+            routed = turns.isRouted(id),
+            restored = models.isNotEmpty() && id !in liveSessions,
         )
     }
 
@@ -177,5 +236,6 @@ class TurnIntake(
         const val NOTE_EXPIRED = "令牌已过期"
         const val RETRY_COOLDOWN_SECONDS = 20L
         private const val MAX_ATTEMPT_ENTRIES = 512
+        private const val MAX_ALIAS_ENTRIES = 512
     }
 }

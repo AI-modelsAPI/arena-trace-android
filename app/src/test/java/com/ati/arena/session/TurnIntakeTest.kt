@@ -44,13 +44,16 @@ class TurnIntakeTest {
     // ---- routing ----
 
     @Test
-    fun tokenFromAConversationThatIsNotOnScreenIsIgnored() {
-        // The reported bug: a late token from the chat the user just LEFT reset
-        // the log to the old chat and painted its model over the new one.
+    fun tokenForAnotherConversationIsRecordedUnderItsOwnSession() {
+        // A late token from the chat the user just LEFT must never paint over the
+        // new chat: it is attributed to its own stream session, which is what
+        // keeps the two logs separated. (Rejecting it used to drop turn 2+.)
         val i = intake()
         val action = i.onToken(event("run_old", "s1", page = "/agent/s2"), null, notInFlight)
-        assertEquals(Action.Ignored, action)
-        assertTrue(i.turns.turns("s1").isEmpty())
+        assertTrue(action is Action.Fetch)
+        assertEquals("s1", (action as Action.Fetch).sessionId)
+        assertTrue(i.turns.turns("s2").isEmpty())
+        assertEquals(1, i.turns.turns("s1").size)
     }
 
     @Test
@@ -67,12 +70,18 @@ class TurnIntakeTest {
         i.onTraceResult("s1", a.turn.key, listOf("model-a"), "")
         // User taps "New chat"; s1's closing stream still delivers a token.
         i.onNavigate("/agent")
-        assertEquals(Action.Ignored, i.onToken(event("run_a2", "s1", page = "/agent"), null, notInFlight))
+        assertEquals(
+            Action.Ignored(TurnIntake.IgnoreReason.ROUTING),
+            i.onToken(event("run_a2", "s1", page = "/agent"), null, notInFlight),
+        )
         // The new conversation's first stream is adopted…
         assertTrue(i.onToken(event("run_n", "s2", page = "/agent"), null, notInFlight) is Action.Fetch)
         assertEquals("s2", i.newChatSession)
         // …and nothing else is accepted on that page afterwards.
-        assertEquals(Action.Ignored, i.onToken(event("run_x", "s3", page = "/agent"), null, notInFlight))
+        assertEquals(
+            Action.Ignored(TurnIntake.IgnoreReason.ROUTING),
+            i.onToken(event("run_x", "s3", page = "/agent"), null, notInFlight),
+        )
         // A fresh visit to the new-chat page starts a new adoption.
         i.onNavigate("/agent")
         assertEquals(null, i.newChatSession)
@@ -81,14 +90,25 @@ class TurnIntakeTest {
     @Test
     fun missingPagePathFallsBackToTheNativePath() {
         val i = intake()
-        assertEquals(Action.Ignored, i.onToken(event("run_a", "s1", page = null), "/agent/s2", notInFlight))
-        assertTrue(i.onToken(event("run_a", "s1", page = null), "/agent/s1", notInFlight) is Action.Fetch)
+        // The native fallback path drives routing (here: a conversation page, so
+        // the stream is accepted — and attributed to its own session id).
+        val a = i.onToken(event("run_a", "s1", page = null), "/agent/s2", notInFlight)
+        assertTrue(a is Action.Fetch)
+        assertEquals("s1", (a as Action.Fetch).sessionId)
+        // A non-conversation fallback page still rejects.
+        assertEquals(
+            Action.Ignored(TurnIntake.IgnoreReason.ROUTING),
+            i.onToken(event("run_b", "s3", page = null), "/leaderboard", notInFlight),
+        )
     }
 
     @Test
     fun malformedTokenIsIgnored() {
         val i = intake()
-        assertEquals(Action.Ignored, i.onToken(SnoopEvent("s1", "not.a.valid-token-at-all", "/agent/s1"), null, notInFlight))
+        assertEquals(
+            Action.Ignored(TurnIntake.IgnoreReason.TOKEN),
+            i.onToken(SnoopEvent("s1", "not.a.valid-token-at-all", "/agent/s1"), null, notInFlight),
+        )
     }
 
     // ---- run identity ----
@@ -218,5 +238,42 @@ class TurnIntakeTest {
         val v = intake().view("")
         assertTrue(v.turns.isEmpty())
         assertTrue(v.currentModels.isEmpty())
+    }
+
+    // ---- page id ≠ stream id (aliases) ----
+
+    /** Arena's /c/{evalId} pages run under a stream session with a different id. */
+    @Test
+    fun pageConversationIdAliasesToItsStreamSession() {
+        val i = intake()
+        val a = i.onToken(event("run_a", "stream-s", page = "/c/eval-123"), null, notInFlight) as Action.Fetch
+        i.onTraceResult("stream-s", a.turn.key, listOf("model-a"), "")
+        // The panel asks for the PAGE id; the turns live under the stream id.
+        assertEquals("stream-s", i.conversationFor("eval-123"))
+        assertEquals(listOf("model-a"), i.view("eval-123").currentModels)
+        assertEquals(listOf("model-a"), i.modelsFor("eval-123"))
+        assertEquals("model-a", i.view("eval-123").turns.single().model)
+        // Turn 2 on the same page keeps the alias.
+        val b = i.onToken(event("run_b", "stream-s", page = "/c/eval-123"), null, notInFlight) as Action.Fetch
+        assertEquals(2, b.turn.number)
+        assertEquals(2, i.view("eval-123").turns.size)
+    }
+
+    @Test
+    fun replayedKnownRunsNeverClaimAPage() {
+        // s1 has reached turn 1 while being created on /agent. The user switches
+        // to /c/eval-123 and s1's closing stream replays its (resolved) run —
+        // that must NOT alias the new page to s1.
+        val i = intake()
+        val a = i.onToken(event("run_a", "s1", page = "/agent"), null, notInFlight) as Action.Fetch
+        i.onTraceResult("s1", a.turn.key, listOf("model-a"), "")
+        val replay = i.onToken(event("run_a", "s1", page = "/c/eval-123"), null, notInFlight)
+        assertTrue(replay is Action.Known)
+        assertEquals("eval-123", i.conversationFor("eval-123"))
+        assertTrue(i.view("eval-123").turns.isEmpty())
+        // The new conversation's own first NEW run may claim it.
+        val own = i.onToken(event("run_x", "stream-x", page = "/c/eval-123"), null, notInFlight) as Action.Fetch
+        assertEquals(1, own.turn.number)
+        assertEquals("stream-x", i.conversationFor("eval-123"))
     }
 }
