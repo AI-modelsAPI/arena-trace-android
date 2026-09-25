@@ -19,19 +19,22 @@
    text never crosses the bridge (24-char snippet, native side drops anything
    longer). Idempotent; re-injection bumps the version. */
 (() => {
-  const VERSION = 2;
+  const VERSION = 3;
   if ((globalThis.ArenaWatchdog?.version || 0) >= VERSION) return;
 
   // Evaluation gate: without recent conversation activity we never even look.
   const FRESH_MS = 120_000;
   // Reaction delays. An error / empty-reply state must stay on screen this long
-  // before it is reported, so the app never reloads mid-stream.
+  // before it is reported, so the app never reloads mid-stream — and, for
+  // "empty", longer than a slow first token comfortably takes.
   const ERROR_GRACE_MS = 1000;
-  const EMPTY_GRACE_MS = 4500;
+  const EMPTY_GRACE_MS = 15000;
   const TAIL_ROUNDS = 3; // ×600ms: last-checkpoint tail emitting nothing ⇒ "ended"
+  const STABLE_STREAK = 3; // a problem must persist 3 scans before it is reported
   const SCAN_MS = 600;
   const MAX_MESSAGE_CHARS = 50000;
   const ACTIVITY_KEY = 'ati_watchdog_activity';
+  const SEND_KEY = 'ati_watchdog_send';
 
   const clean = t => String(t ?? '').replace(/\s+/g, ' ').trim();
 
@@ -45,18 +48,28 @@
     lastActivityAt = Date.now();
     try { sessionStorage.setItem(ACTIVITY_KEY, String(lastActivityAt)); } catch (_) {}
   }
+  // A SEND is the only evidence that a reply is owed. Persisted like activity,
+  // so the stuck-after-reload case still has its reference point.
+  let lastSendAt = (() => {
+    try { return Number(sessionStorage.getItem(SEND_KEY)) || 0; } catch (_) { return 0; }
+  })();
+  function touchSend() {
+    lastSendAt = Date.now();
+    touchActivity();
+    try { sessionStorage.setItem(SEND_KEY, String(lastSendAt)); } catch (_) {}
+  }
   const fresh = () => Date.now() - lastActivityAt <= FRESH_MS;
 
   const SEND_LABEL = /^(send( message)?|submit|发送(消息)?)$/i;
   addEventListener('keydown', ev => {
     if (ev.key === 'Enter' && !ev.shiftKey &&
-        ev.target?.closest?.('textarea,[contenteditable="true"]')) touchActivity();
+        ev.target?.closest?.('textarea,[contenteditable="true"]')) touchSend();
   }, true);
   addEventListener('click', ev => {
     const b = ev.target?.closest?.('button');
     if (!b) return;
     const label = (b.getAttribute('aria-label') || '').trim() || clean(b.textContent);
-    if (SEND_LABEL.test(label) || b.type === 'submit') touchActivity();
+    if (SEND_LABEL.test(label) || b.type === 'submit') touchSend();
   }, true);
 
   // Session-stream requests show up as resource timing entries. They are the
@@ -100,11 +113,7 @@
     /发生错误[，,。\s]*.*(重试|再试)/,
     /网络错误[^\n]{0,40}(重试|再试|稍后)/,
     /请求失败[^\n]{0,40}(重试|再试|稍后)/,
-    /请(稍候|稍后)?重试/,
-    /请(稍候|稍后)?再试/,
     /(操作)?过于频繁/,
-    /429/,
-    /trace\s*id/i, // arena error card footer ("…Trace ID …" appears only on errors)
   ];
   const matchError = t => ERROR_PATTERNS.find(re => re.test(t));
 
@@ -198,6 +207,11 @@
   let generatingStreak = 0; // consecutive scans with no Stop button
   let lastRawLen = -1, prevRawLen = -1, tailQuiet = 0; // -1 = no baseline yet
   let errorSince = 0, emptySince = 0, lastKey = '';
+  let stableKey = '', stableStreak = 0;
+  // "A reply owes us something": total reply text when the send happened. Any
+  // new assistant character grows the total beyond the baseline — the ONLY
+  // short-reply-proof "nothing was rendered" test is zero growth.
+  let sendBaselineAt = 0, baselineTotal = -1;
 
   function resetAccumulators() {
     lastKey = '';
@@ -205,6 +219,8 @@
     emptySince = 0;
     generatingStreak = 0;
     tailQuiet = 0;
+    stableKey = '';
+    stableStreak = 0;
   }
 
   function scan() {
@@ -232,9 +248,18 @@
     // even in a tab that started with no history (e.g. right after a reload).
     const stop = isGenerating();
     if (stop) touchActivity();
-    const rawLen = replyContainers().at(-1)?.text.length || 0;
+    const replies = replyContainers();
+    const rawLen = replies.at(-1)?.text.length || 0;
+    const totalLen = replies.reduce((a, m) => a + m.text.length, 0);
     if (lastRawLen >= 0 && rawLen > lastRawLen) touchActivity();
     lastRawLen = rawLen;
+    // Adopt the total reply text at send time as the "nothing rendered yet"
+    // reference. Only a SEND moves the baseline (stream growth/Stop merely
+    // keep the freshness window open; they are not owed-reply events).
+    if (lastSendAt > sendBaselineAt) {
+      sendBaselineAt = lastSendAt;
+      baselineTotal = totalLen;
+    }
 
     if (!fresh()) { // idle conversation: stay silent
       resetAccumulators();
@@ -257,12 +282,21 @@
       if (now - errorSince >= ERROR_GRACE_MS) key = 'error:' + err;
     } else errorSince = 0;
 
-    if (!key && ended && rawLen < 40) {
+    // "Empty" = we sent a message, streaming has ended, and NOTHING new (not
+    // one character) appeared since the send, for the whole grace period.
+    // Length-of-last-reply is intentionally NOT used: short valid replies
+    // ("好", "OK") are legitimate and must never reload the page.
+    const noGrowth = baselineTotal >= 0 && totalLen <= baselineTotal;
+    if (!key && ended && noGrowth) {
       if (!emptySince) emptySince = now;
       if (now - emptySince >= EMPTY_GRACE_MS) key = 'empty';
-    } else if (rawLen >= 40) emptySince = 0;
+    } else if (!noGrowth) emptySince = 0;
 
-    if (!key || key === lastKey) return;
+    // A problem must be stable across STABLE_STREAK scans before it is worth
+    // an app round-trip (glitch screens, transient DOM states).
+    if (key !== stableKey) { stableKey = key; stableStreak = 0; }
+    if (key) stableStreak++;
+    if (!key || stableStreak < STABLE_STREAK || key === lastKey) return;
     lastKey = key;
     try {
       ArenaProbeBridge.onLog('WATCH|' + JSON.stringify({

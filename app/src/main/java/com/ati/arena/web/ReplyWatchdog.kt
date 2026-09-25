@@ -39,13 +39,26 @@ object ReplyWatchdog {
      */
     const val ERROR_ACCEPT_MS = 45_000L
 
-    const val STALE_EMPTY_MS = 8_000L
+    /**
+     * Empty-reply reports go cold much faster. Must cover the page-side grace
+     * period (15 s): an empty report is only SENT after that much silence, so
+     * anything short of `accept > grace` would discard every legitimate one.
+     */
+    const val STALE_EMPTY_MS = 20_000L
 
     /** The same problem is auto-refreshed at most this many times. */
     const val MAX_SAME_KEY_RELOADS = 2
 
     /** Error snippets from the page are capped (defence in depth for log spam). */
     const val MAX_SNIPPET_CHARS = 24
+
+    /**
+     * One observation of a problem is suspicious, two are evidence: the problem
+     * must be reported twice, at least this many ms apart, before a reload.
+     * Screens against single-scan glitches (transient DOM states, a report
+     * fired while navigation is settling).
+     */
+    const val CONFIRM_MS = 2_000L
 
     data class Status(
         /** "error:<snippet>" or "empty". */
@@ -72,7 +85,7 @@ object ReplyWatchdog {
         data object Ignore : Decision
     }
 
-    enum class Reason { BUSY, TASK_RUNNING, COOLDOWN, STALE, NAG, CAPPED }
+    enum class Reason { BUSY, TASK_RUNNING, COOLDOWN, STALE, NAG, CAPPED, WAIT }
 
     data class State(
         /** Paths already auto-refreshed at (epoch ms). */
@@ -81,6 +94,8 @@ object ReplyWatchdog {
         val reloads: Map<String, Int> = emptyMap(),
         /** Problems the manual-refresh nudge was already shown for. */
         val nagged: Set<String> = emptySet(),
+        /** First sighting per problem ("path|key") — the [CONFIRM_MS] two-strike window. */
+        val firstSeen: Map<String, Long> = emptyMap(),
     )
 
     /**
@@ -130,8 +145,10 @@ object ReplyWatchdog {
         if (linkTabOpen || loading) return Decision.Track(Reason.BUSY)
         if (taskStartedAt > 0L && nowMs - taskStartedAt < TASK_BLOCK_MS) return Decision.Track(Reason.TASK_RUNNING)
 
-        // No recent conversation activity: an idle chat is never ours to fix.
-        if (status.act > 0L && nowMs - status.act > FRESH_MS) return Decision.Ignore
+        // No known/recent conversation activity: an idle chat is never ours to
+        // fix. act=0 (the page knows of none) counts as idle — reloading a
+        // conversation the user is only READING is the failure mode we avoid.
+        if (nowMs - status.act > FRESH_MS) return Decision.Ignore
 
         // A streaming reply usually gets its content in the end — don't interrupt.
         if (status.generating && status.key == KEY_EMPTY) return Decision.Ignore
@@ -150,6 +167,10 @@ object ReplyWatchdog {
             return Decision.Track(if (problem in state.nagged) Reason.CAPPED else Reason.NAG)
         }
 
+        // Two observations, at least CONFIRM_MS apart, before any action.
+        val first = state.firstSeen[problem] ?: return Decision.Track(Reason.WAIT)
+        if (nowMs - first < CONFIRM_MS) return Decision.Track(Reason.WAIT)
+
         val last = state.lastReloadAt[status.path] ?: 0L
         if (last > 0L && nowMs - last < COOLDOWN_MS) return Decision.Track(Reason.COOLDOWN)
         return Decision.Reload
@@ -162,11 +183,23 @@ object ReplyWatchdog {
             Decision.Reload -> state.copy(
                 lastReloadAt = state.lastReloadAt + (status.path to nowMs),
                 reloads = state.reloads + (problem to (state.reloads[problem] ?: 0) + 1),
+                // A reload starts a fresh observation cycle for this problem.
+                firstSeen = state.firstSeen - problem,
             )
-            is Decision.Track -> if (decision.reason == Reason.NAG) {
-                state.copy(nagged = state.nagged + problem)
-            } else {
-                state
+            is Decision.Track -> when (decision.reason) {
+                Reason.NAG -> state.copy(nagged = state.nagged + problem)
+                Reason.WAIT -> {
+                    if (state.firstSeen.containsKey(problem)) {
+                        state
+                    } else {
+                        var next = state.firstSeen + (problem to nowMs)
+                        if (next.size > MAX_SEEN_PROBLEMS) {
+                            next = next - next.entries.minByOrNull { it.value }!!.key
+                        }
+                        state.copy(firstSeen = next)
+                    }
+                }
+                else -> state
             }
             Decision.Ignore -> state
         }
@@ -175,4 +208,5 @@ object ReplyWatchdog {
     const val PREFIX = "WATCH|"
     const val KEY_EMPTY = "empty"
     const val KEY_ERROR_PREFIX = "error:"
+    private const val MAX_SEEN_PROBLEMS = 64
 }

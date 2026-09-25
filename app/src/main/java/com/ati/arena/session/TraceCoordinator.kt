@@ -64,7 +64,7 @@ class TraceCoordinator(
                 onChanged(action.sessionId)
             }
             is TurnIntake.Action.Query -> {
-                log("检测到会话有新回复，重新解析模型…")
+                log("会话流有新数据，重新校验模型…")
                 launchFetch(action.sessionId, action.turn, action.runId, action.token, refresh = true)
             }
         }

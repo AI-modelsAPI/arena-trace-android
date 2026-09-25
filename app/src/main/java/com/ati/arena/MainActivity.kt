@@ -437,6 +437,9 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
         runOnUiThread {
             if (isDestroyed) return@runOnUiThread
             if (!store.loadPanelPrefs().autoRefresh) return@runOnUiThread
+            // A report about a page we already left is worthless — never reload
+            // the CURRENT conversation for a previous one's problem.
+            if (status.path.trimEnd('/') != currentPath.trimEnd('/')) return@runOnUiThread
             val now = System.currentTimeMillis()
             val decision = ReplyWatchdog.decide(watchdog, status, now, linkTabOpen, pageLoading, taskStartedAt)
             when (decision) {
