@@ -142,7 +142,7 @@ jobs:
           git -C /tmp/pages remote add origin "$hub"
           # Keep every past APK on the site; repo files are pruned, not apk/.
           if git -C /tmp/pages fetch -q --depth=1 origin gh-pages; then
-            git -C /tmp/pages checkout -q FETCH_HEAD
+            git -C /tmp/pages checkout -q -B gh-pages FETCH_HEAD
             stale=$(git -C /tmp/pages ls-files | grep -v -e '^apk/' -e '^index\.html$' || true)
             if [ -n "$stale" ]; then printf '%s\n' "$stale" | xargs -r -d '\n' git -C /tmp/pages rm -q --; fi
           else
