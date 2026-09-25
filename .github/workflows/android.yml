@@ -153,18 +153,17 @@ jobs:
             fi
           done
 
-          if grep -q "→ http" /tmp/mirror.md; then
-            gh release view "$tag" --json body --jq -r .body > /tmp/notes.md || true
-            {
-              echo
-              echo "### 免登录直链（镜像，点开即下载）"
-              cat /tmp/mirror.md
-            } >> /tmp/notes.md
-            gh release edit "$tag" --notes-file /tmp/notes.md
-            { echo "### 免登录直链"; grep "→ http" /tmp/mirror.md; } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "::warning::no mirror host accepted the APKs"; cat /tmp/mirror.md
-          fi
+          # Always write the mirror table (successes AND host error messages)
+          # into the release notes: the notes are the one place readable
+          # without log access.
+          gh release view "$tag" --json body --jq -r .body > /tmp/notes.md || true
+          {
+            echo
+            echo "### 免登录直链（镜像，点开即下载）"
+            cat /tmp/mirror.md
+          } >> /tmp/notes.md
+          gh release edit "$tag" --notes-file /tmp/notes.md
+          grep "→ http" /tmp/mirror.md >> "$GITHUB_STEP_SUMMARY" || true
 
       # Compiler errors, Gradle failure summaries and failed unit tests become
       # ::error annotations on the check run.
