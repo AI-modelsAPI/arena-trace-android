@@ -5,8 +5,6 @@ on:
     # arena/** = agent work branches: each push is built and tested, and the
     # APKs are available as run artifacts before anything reaches main.
     branches: [main, 'arena/**']
-    # v* tags additionally publish a GitHub Release (login-free APK links).
-    tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -19,9 +17,6 @@ jobs:
   build:
     # Pinned image: ubuntu-latest moves to a new Ubuntu release in Oct 2026.
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write   # tag pushes attach the APKs to a public GitHub Release
-      pages: write      # and kick a Pages build for the public gh-pages APK links
     steps:
       - uses: actions/checkout@v7
 
@@ -84,7 +79,6 @@ jobs:
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/upload-artifact@v7
         with:
-          name: arena-trace-v${{ env.APK_VERSION }}-release
           path: dist/arena-trace-v${{ env.APK_VERSION }}-release.apk
           archive: false
           if-no-files-found: error
@@ -93,7 +87,6 @@ jobs:
         id: upload_debug
         uses: actions/upload-artifact@v7
         with:
-          name: arena-trace-v${{ env.APK_VERSION }}-debug
           path: dist/arena-trace-v${{ env.APK_VERSION }}-debug.apk
           archive: false
           if-no-files-found: error
@@ -112,91 +105,6 @@ jobs:
             fi
             echo "- 调试版：[arena-trace-v${APK_VERSION}-debug.apk](${DEBUG_URL})"
           } >> "$GITHUB_STEP_SUMMARY"
-
-      # Tag push → public GitHub Release. The repo is private, so release/artifact
-      # downloads need a GitHub session; the APKs are therefore also pushed to the
-      # public gh-pages site (login-free tap-to-download links).
-      - name: Publish APKs (release + gh-pages)
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -e
-          tag="${GITHUB_REF_NAME}"
-          version="${APK_VERSION:-${tag#v}}"
-          # The GitHub release must stay strict; the gh-pages mirror must never
-          # fail the build and must leave its log in the summary/notes so it
-          # stays debuggable without Actions log access.
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" dist/*.apk --clobber
-          else
-            gh release create "$tag" dist/*.apk --title "Arena Trace ${tag}" --generate-notes
-          fi
-
-          set +e
-          {
-          hub="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
-          rm -rf /tmp/pages; mkdir -p /tmp/pages
-          git -C /tmp/pages init -q -b gh-pages
-          git -C /tmp/pages remote add origin "$hub"
-          # Keep every past APK on the site; repo files are pruned, not apk/.
-          if git -C /tmp/pages fetch -q --depth=1 origin gh-pages; then
-            git -C /tmp/pages checkout -q -B gh-pages FETCH_HEAD
-            stale=$(git -C /tmp/pages ls-files | grep -v -e '^apk/' -e '^index\.html$' || true)
-            if [ -n "$stale" ]; then printf '%s\n' "$stale" | xargs -r -d '\n' git -C /tmp/pages rm -q --; fi
-          else
-            echo "WARN: gh-pages branch fetch failed (first publish?)"
-          fi
-          git -C /tmp/pages config user.name "github-actions[bot]"
-          git -C /tmp/pages config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          mkdir -p /tmp/pages/apk
-          cp dist/*.apk /tmp/pages/apk/
-          {
-            echo '<!doctype html><meta charset="utf-8"><title>Arena Trace builds</title>'
-            echo '<h1>Arena Trace 下载</h1><ul>'
-            for a in /tmp/pages/apk/*.apk; do
-              [ -e "$a" ] || continue
-              b=$(basename "$a")
-              echo "<li><a href=\"apk/$b\">$b</a></li>"
-            done
-            echo "</ul><p>最新版本：v${version}</p>"
-          } > /tmp/pages/index.html
-          # The repo .gitignore excludes *.apk — force-add the binaries.
-          git -C /tmp/pages add index.html
-          git -C /tmp/pages add -f apk
-          if git -C /tmp/pages commit -q -m "APKs for ${tag}"; then
-            git -C /tmp/pages push origin gh-pages
-            gh api -X POST "repos/${{ github.repository }}/pages/builds" -f "ref=gh-pages" 2>/dev/null || true
-          else
-            echo "WARN: nothing new to commit on gh-pages"
-          fi
-          } > /tmp/pages.log 2>&1
-
-          page_base="https://ai-modelsapi.github.io/arena-trace-android"
-          {
-            echo "### 免登录直链（gh-pages，点开即下载）"
-            echo "- 正式签名版：${page_base}/apk/arena-trace-v${version}-release.apk"
-            echo "- 调试版：${page_base}/apk/arena-trace-v${version}-debug.apk"
-            echo
-            echo '```'
-            tail -c 1500 /tmp/pages.log
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          gh release view "$tag" --json body --jq .body > /tmp/notes.md 2>/dev/null || : > /tmp/notes.md
-          {
-            echo
-            echo "### 免登录直链（点开即下载）"
-            echo "- 正式签名版：${page_base}/apk/arena-trace-v${version}-release.apk"
-            echo "- 调试版：${page_base}/apk/arena-trace-v${version}-debug.apk"
-            echo
-            echo '<details><summary>publish log</summary>'
-            echo '```'
-            tail -c 1500 /tmp/pages.log
-            echo '```'
-            echo '</details>'
-          } >> /tmp/notes.md
-          gh release edit "$tag" --notes-file /tmp/notes.md || true
 
       # Compiler errors, Gradle failure summaries and failed unit tests become
       # ::error annotations on the check run.
@@ -241,4 +149,3 @@ jobs:
           if failed:
               emit(f"{len(failed)} unit test(s) failed", failed)
           PY
-
