@@ -264,81 +264,74 @@ class ProbeController(
      *    chat first and then archived (it used to be skipped every time);
      *  - a final scan reports anything still left.
      */
+    /**
+     * Archive every conversation whose title is bare arithmetic (probe residue).
+     *
+     * One page-side sweep walks the virtualized sidebar top → bottom and archives
+     * each arithmetic row WHILE it is mounted: arithmetic residue anywhere in the
+     * list (first, middle or last) is handled identically, with no remembered
+     * scroll offsets to go stale. The page enforces a wall-clock budget, a step
+     * budget and a consecutive-failure abort, and every archive is echoed to the
+     * log as it happens — the sweep can never spin silently. Afterwards the open
+     * chat, if it is itself arithmetic residue, is left for a fresh chat first
+     * (the old [archiveOpenChat] rail), and a light rescan verifies the result.
+     */
     fun cleanup() {
         if (isRunning) { listener.onProgress("已有任务在运行，请先停止"); return }
         job = scope.launch(Dispatchers.Main) {
             var archived = 0
-            val done = HashSet<String>()                 // archived or deliberately skipped
-            val failures = LinkedHashMap<String, String>() // sessionId -> title, still failing
-            val attempts = HashMap<String, Int>()
             var currentNote: String? = null
             var incomplete = false
-            var verified: Scan? = null   // a scan that found nothing left to do
+            val failures = LinkedHashMap<String, String>()
             listener.onCleanupState(0, true)
             try {
-                val startedAt = System.currentTimeMillis()
-                for (pass in 1..MAX_PASSES) {
-                    ensureActive()
-                    if (System.currentTimeMillis() - startedAt > CLEANUP_TIME_BUDGET_MS) {
-                        listener.onProgress("清理已运行较久，提前收尾（可再点一次清理继续）")
-                        break
+                listener.onProgress("扫描并归档算式标题对话（遇到即清，不挑位置）…")
+                val raw = rpc(
+                    "cleanupSweep",
+                    JSONObject()
+                        .put("budgetMs", SWEEP_BUDGET_MS)
+                        .put("maxFailures", MAX_CONSECUTIVE_FAILURES),
+                    SWEEP_TIMEOUT_MS,
+                )
+                incomplete = raw.optBoolean("incomplete", false)
+                raw.optJSONArray("archived")?.let { arr ->
+                    for (i in 0 until arr.length()) {
+                        val o = arr.optJSONObject(i) ?: continue
+                        archived++
+                        listener.onProgress("已归档 " + o.optString("title").ifEmpty { o.optString("sessionId") })
+                        listener.onCleanupState(archived, true)
                     }
-                    listener.onProgress(if (pass == 1) "扫描侧栏（含懒加载的旧对话）…" else "复查侧栏（第 $pass 遍）…")
-                    val scan = scanSidebar()
-                    incomplete = !scan.complete
-                    if (scan.items.isEmpty()) {
-                        // Distinct from "scanned N and none need archiving": the
-                        // page coughed up zero recognizable rows — almost always
-                        // a structural change on Arena's side, and grinding on
-                        // would only spin. Say so in plain words and stop fast.
-                        listener.onProgress("侧栏扫描完成：未识别到对话链接（0 项）；若侧栏非空，网页结构可能已更新")
-                        verified = scan; break
+                }
+                raw.optJSONArray("failed")?.let { arr ->
+                    for (i in 0 until arr.length()) {
+                        val o = arr.optJSONObject(i) ?: continue
+                        val title = o.optString("title").ifEmpty { o.optString("sessionId") }
+                        failures[title] = o.optString("error")
                     }
-                    val exhausted = attempts.filterValues { it >= MAX_ATTEMPTS_PER_CHAT }.keys
-                    val plan = ProbeLogic.planCleanup(scan.items, scan.current, done + exhausted)
-                    if (plan.isEmpty) { verified = scan; break }
-                    if (pass == 1) listener.onProgress("发现 ${plan.size} 个算式标题对话（共扫描 ${scan.items.size} 个），开始归档")
-
-                    var consecutive = 0
-                    for (item in plan.others) {
-                        ensureActive()
-                        when (archiveOne(item)) {
-                            Outcome.ARCHIVED -> {
-                                archived++; done += item.sessionId; failures.remove(item.sessionId); consecutive = 0
-                                listener.onProgress("已归档 ${item.title}")
-                                listener.onCleanupState(archived, true)
-                            }
-                            Outcome.SKIPPED -> { done += item.sessionId; failures.remove(item.sessionId) }
-                            Outcome.FAILED -> {
-                                attempts[item.sessionId] = (attempts[item.sessionId] ?: 0) + 1
-                                failures[item.sessionId] = item.title
-                                if (++consecutive >= MAX_CONSECUTIVE_FAILURES) {
-                                    listener.onProgress("连续失败 $consecutive 次，本遍中止，稍后复查")
-                                    break
-                                }
-                            }
-                        }
-                        delay(ARCHIVE_GAP_MS)
-                    }
-
-                    plan.current?.let { current ->
-                        ensureActive()
-                        when (val r = archiveOpenChat(current)) {
-                            null -> {
-                                archived++; done += current.sessionId; failures.remove(current.sessionId)
-                                listener.onCleanupState(archived, true)
-                            }
-                            else -> { currentNote = r; done += current.sessionId }
-                        }
-                    }
-                    delay(PASS_GAP_MS)
+                }
+                if (raw.optInt("scanned", 0) == 0) {
+                    // Zero recognizable rows — almost always a structural change
+                    // on Arena's side; say so in plain words instead of grinding.
+                    listener.onProgress("侧栏扫描完成：未识别到对话链接（0 项）；若侧栏非空，网页结构可能已更新")
                 }
 
-                // Verification: arithmetic chats still in the sidebar (reuses the last
-                // pass's scan when it already came back clean).
-                val finalScan = verified ?: runCatching { scanSidebar() }.getOrNull()
-                val remaining = finalScan?.let { ProbeLogic.planCleanup(it.items, null).size } ?: -1
-                listener.onFinished(summary(archived, failures.values.toList(), currentNote, remaining, incomplete))
+                // The open chat, when it is itself arithmetic residue: leave it
+                // for a fresh chat first, then archive from the sidebar.
+                val current = raw.optJSONObject("skippedCurrent")
+                    ?.let { ProbeLogic.SidebarItem(it.optString("sessionId"), it.optString("title"), 0) }
+                    ?.takeIf { it.sessionId.isNotEmpty() }
+                current?.let { item ->
+                    when (val r = archiveOpenChat(item)) {
+                        null -> { archived++; listener.onCleanupState(archived, true) }
+                        else -> currentNote = r
+                    }
+                }
+
+                // Verification: a light rescan reports anything still left.
+                val remaining = runCatching { scanSidebar() }
+                    .getOrNull()
+                    ?.let { ProbeLogic.planCleanup(it.items, null).size } ?: -1
+                listener.onFinished(summary(archived, failures.keys.toList(), currentNote, remaining, incomplete))
             } catch (_: CancellationException) {
                 listener.onFinished("清理已停止（已归档 $archived）")
             } catch (e: Exception) {
@@ -488,6 +481,9 @@ class ProbeController(
         const val MAX_CONSECUTIVE_FAILURES = 3
         /** Whole-sweep budget: beyond this the current plan is left for the next tap. */
         const val CLEANUP_TIME_BUDGET_MS = 12L * 60_000L
+        /** Page-side cleanup sweep budget plus RPC headroom (sweep archives as it scans). */
+        private const val SWEEP_BUDGET_MS = 8L * 60_000L
+        private const val SWEEP_TIMEOUT_MS = SWEEP_BUDGET_MS + 90_000L
         const val ARCHIVE_GAP_MS = 500L
         const val PASS_GAP_MS = 800L
         const val RETRY_DELAY_MS = 1_200L

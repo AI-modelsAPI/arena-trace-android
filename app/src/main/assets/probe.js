@@ -15,7 +15,7 @@
  */
 (() => {
   // Re-injection guard: onPageFinished can fire more than once per document.
-  const VERSION = 5; // longer draft-guard dumps; skip reCAPTCHA/aria-hidden pseudo editors
+  const VERSION = 6; // position-agnostic cleanup sweep: archive the moment a row mounts
   if ((globalThis.ArenaProbe?.version || 0) >= VERSION) return;
   const ARENA = 'https://arena.ai';
   const NEW_CHAT_LABELS = ['New Chat', 'New chat', '新建聊天', '新对话', '新建对话'];
@@ -494,6 +494,101 @@
       if (!wasOpen && sidebarIsOpen()) openedByProbe = true;
     }
   }
+  /**
+   * Position-agnostic cleanup: walk the virtualized sidebar top → bottom once
+   * and archive every bare-arithmetic row WHILE it is mounted — no remembered
+   * scroll offsets, no seek-back phase, and arithmetic residue anywhere in the
+   * list (first, middle or last) is handled the same way. Hard bounds make the
+   * panel impossible to spin: wall-clock budget, step budget, and a
+   * consecutive-failure abort with the page's own error text.
+   * Returns { archived:[{sessionId,title}], failed:[{sessionId,title,error}],
+   *           skippedCurrent:{sessionId,title}|null, scanned, incomplete, lastError }.
+   */
+  async function cleanupSweep(args) {
+    const opened = await ensureSidebarOpen();
+    if (!opened.open) throw Error('无法打开侧栏');
+    if (!sidebarLinks().length) await waitFor(() => sidebarLinks().length > 0, '', 6000).catch(() => {});
+    const api = globalThis.ArenaConversationRename;
+    if (!api?.archive) throw Error('页面归档组件未就绪');
+    const currentId = session();
+    const budgetMs = Math.max(30_000, Math.min(10 * 60_000, Number(args?.budgetMs) || 6 * 60_000));
+    const maxSteps = Math.max(20, Math.min(1200, Number(args?.maxSteps) || 400));
+    const maxFailures = Math.max(1, Math.min(10, Number(args?.maxFailures) || 3));
+    const started = Date.now();
+    const archived = [], failed = [], seenIds = new Set(), handled = new Set();
+    let skippedCurrent = null, incomplete = false, lastError = '', consecutiveFails = 0;
+
+    const mounted = () => {
+      const rows = [];
+      for (const a of sidebarLinks()) {
+        if (!shown(a)) continue;
+        const id = linkSession(a);
+        const title = normTitle(text(a)).slice(0, 300);
+        seenIds.add(id);
+        rows.push({ id, title, a });
+      }
+      return rows;
+    };
+    const finish = () => ({
+      archived, failed, skippedCurrent,
+      scanned: seenIds.size, incomplete, lastError,
+    });
+
+    const scroller = sidebarScroller();
+    if (scroller) { scroller.scrollTop = 0; await sleep(250); }
+    let quiet = 0, lastHeight = -1, lastCount = -1;
+
+    for (let step = 0; step < maxSteps; step++) {
+      if (Date.now() - started > budgetMs) { incomplete = true; lastError = lastError || '超过清理时限，提前收尾'; break; }
+
+      // Archive every arithmetic row that is mounted RIGHT NOW; re-query after
+      // each one because archived rows unmount and the list slides under us.
+      for (;;) {
+        const row = mounted().find(r => isArithmeticTitle(r.title) && !handled.has(r.id));
+        if (!row) break;
+        if (row.id === currentId) {
+          skippedCurrent = { sessionId: row.id, title: row.title };
+          handled.add(row.id);
+          continue;
+        }
+        handled.add(row.id);
+        try {
+          await api.archive({ sessionId: row.id, isCurrent: () => session() !== row.id, requireCurrentUrl: false, manageSidebar: false });
+          archived.push({ sessionId: row.id, title: row.title });
+          consecutiveFails = 0;
+          await sleep(400); // let the row unmount before re-collecting
+        } catch (e) {
+          consecutiveFails++;
+          lastError = String(e?.message || e).slice(0, 160);
+          failed.push({ sessionId: row.id, title: row.title, error: lastError });
+          if (consecutiveFails >= maxFailures) {
+            incomplete = true;
+            lastError += '（连续失败，已停止；修复后再点一次清理）';
+            return finish();
+          }
+          await sleep(600);
+        }
+      }
+
+      // One viewport-step down, then stop when the list truly stops growing.
+      if (!scroller) break; // every row was mounted — the sweep is complete
+      if (atBottom(scroller)) {
+        const clicked = clickShowMore(scroller);
+        await sleep(clicked ? 700 : 400);
+        const height = scroller.scrollHeight, count = seenIds.size;
+        if (height === lastHeight && count === lastCount && !scroller.querySelector(LOADING)) {
+          if (++quiet >= 3) break;
+        } else quiet = 0;
+        lastHeight = height; lastCount = count;
+        continue;
+      }
+      scroller.scrollTop = Math.min(scroller.scrollTop + Math.max(60, Math.floor(scroller.clientHeight * 0.75)), scroller.scrollHeight);
+      await sleep(140);
+    }
+    if (!incomplete && scroller && quiet < 3) incomplete = true;
+    return finish();
+  }
+
   async function archive(args) {
     const api = globalThis.ArenaConversationRename;
     if (!api) throw Error('归档模块未加载');
@@ -509,6 +604,7 @@
   const ACTIONS = {
     precheck, newChat, ensureAgentMode, send, sendToCurrent, probeInSession,
     sidebarState, sidebarScan, sidebarList, collapseSidebar, archiveFromSidebar, rename, archive,
+    cleanupSweep,
     ensureSidebarOpen: async () => ensureSidebarOpen(),
     revealSidebarItem: async args => { await revealSidebarItem(args); return { found: true }; },
   };
