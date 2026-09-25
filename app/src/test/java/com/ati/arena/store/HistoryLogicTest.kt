@@ -29,6 +29,22 @@ class HistoryLogicTest {
         assertEquals("a-b-c", HistoryLogic.sessionFromPath("/agent/a-b-c"))
     }
 
+    @Test fun sessionFromPathMatchesCConversation() {
+        assertEquals("s1", HistoryLogic.sessionFromPath("/c/s1"))
+        assertEquals("s1", HistoryLogic.sessionFromPath("/c/s1/"))
+        assertEquals("01a0b8cd-1234", HistoryLogic.sessionFromPath("/c/01a0b8cd-1234"))
+        assertEquals(null, HistoryLogic.sessionFromPath("/c"))
+        assertEquals(null, HistoryLogic.sessionFromPath("/c/"))
+    }
+
+    @Test fun conversationPathDetection() {
+        assertEquals(true, HistoryLogic.isConversationPath("/agent/s1"))
+        assertEquals(true, HistoryLogic.isConversationPath("/c/s1"))
+        assertEquals(false, HistoryLogic.isConversationPath("/agent"))
+        assertEquals(false, HistoryLogic.isConversationPath("/c/x y"))
+        assertEquals(false, HistoryLogic.isConversationPath(null))
+    }
+
     @Test fun sessionFromPathRejectsNonConversationPaths() {
         assertEquals(null, HistoryLogic.sessionFromPath("/agent"))
         assertEquals(null, HistoryLogic.sessionFromPath("/agent/"))

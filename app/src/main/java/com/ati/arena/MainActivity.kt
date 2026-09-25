@@ -124,6 +124,11 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
             intake = TurnIntake(store),
             traceClient = TraceClient(),
             onChanged = ::onTurnsChanged,
+            // Progress lines for the panel log; the coordinator is constructed
+            // before the panel, so guard with isInitialized.
+            onLog = { line ->
+                runOnUiThread { if (::panel.isInitialized && !isDestroyed) panel.log(line) }
+            },
         )
         panel = ControlPanel(this, store, this)
         linkTab = LinkTab(this) { open ->

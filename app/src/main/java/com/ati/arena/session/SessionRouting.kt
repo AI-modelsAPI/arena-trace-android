@@ -43,6 +43,15 @@ object SessionRouting {
      * On the new-chat page only ONE conversation is accepted: the first one not
      * seen before (the chat being created). A late token from the chat the user
      * just left is "known" and therefore rejected there.
+     *
+     * On a CONVERSATION page any stream that belongs to a conversation we already
+     * know (live or stored) is accepted, even when the page id and stream id
+     * differ — Arena has used both /agent/{id} and /c/{evalId} URL forms, and the
+     * two ids are not guaranteed identical. Attribution always follows the stream
+     * URL's own session id, so a known late stream is attributed to its own chat,
+     * which is correct. An UNKNOWN session on a conversation page is rejected:
+     * streams only become known through the new-chat adoption or an exact id
+     * match, so this can't smuggle a foreign chat in.
      */
     fun accepts(
         streamSession: String,
@@ -53,7 +62,7 @@ object SessionRouting {
         if (!HistoryLogic.isValidSessionId(streamSession)) return false
         val pageSession = HistoryLogic.sessionFromPath(pagePath)
         return when {
-            pageSession != null -> pageSession == streamSession
+            pageSession != null -> pageSession == streamSession || isKnown(streamSession)
             !isNewChatPath(pagePath) -> false
             newChatSession != null -> newChatSession == streamSession
             else -> !isKnown(streamSession)

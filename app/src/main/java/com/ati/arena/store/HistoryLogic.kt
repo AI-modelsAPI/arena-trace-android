@@ -29,9 +29,10 @@ object HistoryLogic {
     const val MAX_MODEL_LENGTH = 200
     private const val MAX_TURN_NUMBER = 1_000_000
 
-    /** Arena conversation path is /agent/{sessionId}; the id charset is bounded. */
+    /** Arena conversation path is /agent/{sessionId} or /c/{sessionId}; the id charset is bounded. */
     private val SESSION_ID = Regex("^[a-zA-Z0-9-]{1,128}$")
-    private val CONVERSATION_PATH = Regex("^/agent/([a-zA-Z0-9-]{1,128})/?$")
+    private val CONVERSATION_PATH = Regex("^/(?:agent|c)/([a-zA-Z0-9-]{1,128})/?$")
+    private val CONVERSATION_ANY_PATH = Regex("^/(?:agent|c)/[a-zA-Z0-9-]{1,128}/?$")
     private val RUN_KEY = Regex("^[0-9a-f]{16}$")
 
     private const val F_MODELS = "models"
@@ -51,6 +52,9 @@ object HistoryLogic {
     /** Extract the sessionId from a conversation URL path, or null if it isn't one. */
     fun sessionFromPath(path: String?): String? =
         CONVERSATION_PATH.find(path ?: "")?.groupValues?.getOrNull(1)
+
+    /** true when [path] is a conversation page (/agent/{id} or /c/{id}), regardless of the id. */
+    fun isConversationPath(path: String?): Boolean = path != null && CONVERSATION_ANY_PATH.matches(path)
 
     /**
      * Opaque, non-reversible key for a run id (first 16 hex chars of SHA-256).

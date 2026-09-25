@@ -23,6 +23,11 @@ class TraceCoordinator(
     private val traceClient: TraceClient,
     /** A conversation's turn state changed (called on the main thread). */
     private val onChanged: (sessionId: String) -> Unit,
+    /**
+     * Content-free progress lines for the panel log ("第 N 轮" capture/resolve
+     * outcomes). Never receives tokens or page data.
+     */
+    private val onLog: (String) -> Unit = {},
     maxConcurrent: Int = 2,
 ) {
     private val gate = Semaphore(maxConcurrent)
@@ -34,6 +39,7 @@ class TraceCoordinator(
             TurnIntake.Action.Ignored, is TurnIntake.Action.Known -> Unit
             is TurnIntake.Action.Updated -> onChanged(action.sessionId)
             is TurnIntake.Action.Fetch -> {
+                onLog("第 ${action.turn.number} 轮 · 已截获运行令牌，解析模型中")
                 launchFetch(action)
                 onChanged(action.sessionId)
             }
@@ -51,7 +57,14 @@ class TraceCoordinator(
                 } else {
                     gate.withPermit { withContext(Dispatchers.IO) { traceClient.fetchModels(action.token, claims) } }
                 }
-                intake.onTraceResult(action.sessionId, key, if (result.ok) result.models else emptyList(), result.error)
+                val turn = intake.onTraceResult(action.sessionId, key, if (result.ok) result.models else emptyList(), result.error)
+                if (turn != null) {
+                    if (turn.status == TurnTracker.Status.RESOLVED) {
+                        onLog("第 ${turn.number} 轮 · 模型: " + turn.models.joinToString("、"))
+                    } else if (turn.status == TurnTracker.Status.FAILED) {
+                        onLog("第 ${turn.number} 轮 · 未能解析模型（${turn.note.ifEmpty { result.error ?: "未知原因" }}）")
+                    }
+                }
                 onChanged(action.sessionId)
             } finally {
                 if (inFlight[key] === coroutineContext[Job]) inFlight.remove(key)

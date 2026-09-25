@@ -14,11 +14,27 @@ class SessionRoutingTest {
     fun acceptsTokenOfTheConversationOnScreen() {
         assertTrue(SessionRouting.accepts("s1", "/agent/s1"))
         assertTrue(SessionRouting.accepts("s1", "/agent/s1/"))
+        assertTrue(SessionRouting.accepts("s1", "/c/s1"))
+        assertTrue(SessionRouting.accepts("s1", "/c/s1/"))
     }
 
     @Test
     fun rejectsTokenOfAnotherConversation() {
         assertFalse(SessionRouting.accepts("s1", "/agent/s2"))
+        assertFalse(SessionRouting.accepts("s1", "/c/s2"))
+    }
+
+    @Test
+    fun conversationPageAcceptsAKnownStreamEvenWithADifferentId() {
+        // Arena uses /c/{evalId} URLs whose id need not equal the stream session
+        // id. A stream we already adopted (its first turn came through the
+        // new-chat page) must keep being accepted after the page navigated there —
+        // this is what lets turn 2+ be recorded. Unknown streams are still out.
+        assertTrue(SessionRouting.accepts("s1", "/c/eval-123") { it == "s1" })
+        assertTrue(SessionRouting.accepts("s1", "/agent/eval-123") { it == "s1" })
+        assertFalse(SessionRouting.accepts("s1", "/c/eval-123") { false })
+        // ...but a KNOWN other chat's late stream is attributed to its own chat.
+        assertTrue(SessionRouting.accepts("old", "/c/eval-123") { it == "old" })
     }
 
     @Test
