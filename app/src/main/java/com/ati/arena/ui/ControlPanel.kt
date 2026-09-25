@@ -1,5 +1,6 @@
 package com.ati.arena.ui
 
+import android.os.SystemClock
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
@@ -9,8 +10,10 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.PopupMenu
+import androidx.core.view.ViewCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.ati.arena.R
@@ -21,6 +24,7 @@ import com.ati.arena.store.Store
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.button.MaterialButtonToggleGroup
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.google.android.material.textfield.TextInputLayout
@@ -32,8 +36,13 @@ import java.time.LocalTime
  * Holds view state only. Data arrives through the show*()/log()/flash() methods
  * (fed by MainActivity) and every user intent leaves through [Actions]; all text
  * is computed by [HudFormat]. Gestures:
- *  - pill: tap → panel, long-press → quick actions, drag → move (snaps to an edge);
+ *  - pill: tap → panel, tap on ⟳ → refresh, long-press → quick actions,
+ *    drag → move (snaps to an edge);
  *  - panel: swipe down, tap outside or Back → close.
+ *
+ * Refresh is one tap from anywhere (pill ⟳, panel header, tools row, quick menu);
+ * all of them go through [requestReload]: double taps are swallowed, and a running
+ * probe / cleanup asks before it is interrupted.
  */
 class ControlPanel(
     private val activity: AppCompatActivity,
@@ -59,6 +68,7 @@ class ControlPanel(
     private val scrim: View = find(R.id.scrim)
     private val sheet: View = find(R.id.sheet)
     private val behavior: BottomSheetBehavior<View> = BottomSheetBehavior.from(sheet)
+    private val pageProgress: LinearProgressIndicator = find(R.id.page_progress)
 
     private val hudModel: TextView = find(R.id.hud_model)
     private val hudHeadline: TextView = find(R.id.hud_headline)
@@ -100,6 +110,7 @@ class ControlPanel(
     private val quickLayout: TextInputLayout = find(R.id.quick_layout)
     private val quickInput: EditText = find(R.id.quick_text)
     private val quickSendButton: MaterialButton = find(R.id.quick_send)
+    private val pillRefreshSwitch: MaterialSwitch = find(R.id.pill_refresh_switch)
 
     // ---------------------------------------------------------------- state
 
@@ -114,6 +125,17 @@ class ControlPanel(
     }
     private val logLines = ArrayDeque<String>()
     private var logExpanded = false
+    private var pillShown = true
+    private var linkTabOpen = false
+    private var lastReloadAt = 0L
+    private var reloadDialog: AlertDialog? = null
+    private val hideProgress = Runnable {
+        pill.refreshing = false
+        pageProgress.animate().alpha(0f).setDuration(FADE_MS).withEndAction {
+            pageProgress.visibility = View.INVISIBLE
+            pageProgress.alpha = 1f
+        }.start()
+    }
     private var uiPrefs: Store.UiPrefs = store.loadUiPrefs()
     private val drag = FloatingDragHelper(pill, dp(EDGE_MARGIN_DP)) { onRight, y ->
         saveUi(uiPrefs.copy(pillOnRight = onRight, pillY = y))
@@ -138,9 +160,10 @@ class ControlPanel(
     val isOpen: Boolean get() = behavior.state != BottomSheetBehavior.STATE_HIDDEN
 
     fun open(tab: Tab? = null) {
+        if (linkTabOpen) return // the link tab covers the page; nothing to control there
         tab?.let { selectTab(it) }
         scrim.visibility = View.VISIBLE
-        pill.animate().alpha(0f).setDuration(FADE_MS).withEndAction { pill.visibility = View.INVISIBLE }.start()
+        showPill(false)
         behavior.state = BottomSheetBehavior.STATE_EXPANDED
     }
 
@@ -153,6 +176,42 @@ class ControlPanel(
         if (!isOpen) return false
         close()
         return true
+    }
+
+    /** The link tab covers the page: hide the pill (and the panel) until it closes. */
+    fun setLinkTabOpen(open: Boolean) {
+        if (linkTabOpen == open) return
+        linkTabOpen = open
+        if (open) {
+            reloadDialog?.dismiss()
+            close()
+        }
+        showPill(!open && !isOpen)
+    }
+
+    /**
+     * Load progress (0..100) of the Arena page: a thin bar along the top and the pill's
+     * ⟳ spinning until it is done. A load that stops reporting for a while is treated
+     * as finished, so nothing spins forever.
+     */
+    fun showPageProgress(progress: Int) {
+        pageProgress.removeCallbacks(hideProgress)
+        if (progress in 0..99) {
+            pill.refreshing = true
+            pageProgress.animate().cancel()
+            pageProgress.alpha = 1f
+            if (pageProgress.visibility != View.VISIBLE) {
+                pageProgress.setProgressCompat(0, false)
+                pageProgress.visibility = View.VISIBLE
+            }
+            pageProgress.setProgressCompat(maxOf(progress, MIN_PAGE_PROGRESS), true)
+            pageProgress.postDelayed(hideProgress, STALLED_LOAD_MS)
+        } else if (pageProgress.visibility == View.VISIBLE) {
+            pageProgress.setProgressCompat(100, true)
+            pageProgress.postDelayed(hideProgress, PROGRESS_LINGER_MS)
+        } else {
+            pill.refreshing = false
+        }
     }
 
     fun selectTab(tab: Tab) {
@@ -244,6 +303,9 @@ class ControlPanel(
 
     fun release() {
         pill.removeCallbacks(clearFlash)
+        pageProgress.removeCallbacks(hideProgress)
+        reloadDialog?.dismiss()
+        reloadDialog = null
     }
 
     // ---------------------------------------------------------------- sheet
@@ -267,6 +329,7 @@ class ControlPanel(
             }
         })
         scrim.setOnClickListener { close() }
+        find<View>(R.id.hud_reload).setOnClickListener { requestReload() }
         // Cap the sheet height to the current window (shrinks while the keyboard is up).
         root.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
             if (bottom - top != oldBottom - oldTop) fitSheetHeight(bottom - top)
@@ -284,8 +347,7 @@ class ControlPanel(
         hideKeyboard()
         scrim.alpha = 0f
         scrim.visibility = View.GONE
-        pill.visibility = View.VISIBLE
-        pill.animate().alpha(1f).setDuration(FADE_MS).start()
+        showPill(!linkTabOpen)
     }
 
     // ---------------------------------------------------------------- pill
@@ -296,7 +358,54 @@ class ControlPanel(
             showQuickMenu()
             true
         }
+        pill.onRefreshTap = { requestReload() }
+        pill.showRefresh = uiPrefs.pillRefresh
+        // TalkBack can't aim at the ⟳ zone, so offer refresh as a custom action.
+        ViewCompat.addAccessibilityAction(pill, activity.getString(R.string.reload_page)) { _, _ ->
+            requestReload()
+            true
+        }
         drag.attach(uiPrefs.pillOnRight, uiPrefs.pillY)
+    }
+
+    private fun showPill(show: Boolean) {
+        if (pillShown == show) return
+        pillShown = show
+        if (show) pill.visibility = View.VISIBLE
+        // The end action re-checks the wanted state, so a late fade can't hide a shown pill.
+        pill.animate().alpha(if (show) 1f else 0f).setDuration(FADE_MS).withEndAction {
+            if (!pillShown) pill.visibility = View.INVISIBLE
+        }.start()
+    }
+
+    // ---------------------------------------------------------------- refresh
+
+    /** Every refresh control ends up here. */
+    private fun requestReload() {
+        if (task == TaskState.Idle) reloadNow() else confirmReload()
+    }
+
+    private fun reloadNow() {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastReloadAt < RELOAD_DEBOUNCE_MS) return // accidental double tap
+        lastReloadAt = now
+        close()
+        actions.navigate(Nav.RELOAD)
+    }
+
+    /** Refreshing mid-task would break it: ask, and stop the task first if confirmed. */
+    private fun confirmReload() {
+        if (reloadDialog?.isShowing == true) return
+        reloadDialog = MaterialAlertDialogBuilder(activity)
+            .setTitle(R.string.reload_confirm_title)
+            .setMessage(if (task is TaskState.Probe) R.string.reload_confirm_probe else R.string.reload_confirm_cleanup)
+            .setNegativeButton(R.string.action_cancel, null)
+            .setPositiveButton(R.string.reload_confirm_ok) { _, _ ->
+                actions.stopTask()
+                reloadNow()
+            }
+            .setOnDismissListener { reloadDialog = null }
+            .show()
     }
 
     private fun renderPill() {
@@ -329,7 +438,7 @@ class ControlPanel(
                 MENU_PROBE -> startProbeFromForm()
                 MENU_CLEANUP -> actions.startCleanup()
                 MENU_QUICK_SEND -> sendQuickText()
-                MENU_RELOAD -> actions.navigate(Nav.RELOAD)
+                MENU_RELOAD -> requestReload()
                 MENU_PANEL -> open()
             }
             true
@@ -463,9 +572,11 @@ class ControlPanel(
         quickSendButton.setOnClickListener { sendQuickText() }
         find<View>(R.id.nav_back).setOnClickListener { actions.navigate(Nav.BACK) }
         find<View>(R.id.nav_forward).setOnClickListener { actions.navigate(Nav.FORWARD) }
-        find<View>(R.id.nav_reload).setOnClickListener {
-            close()
-            actions.navigate(Nav.RELOAD)
+        find<View>(R.id.nav_reload).setOnClickListener { requestReload() }
+        pillRefreshSwitch.isChecked = uiPrefs.pillRefresh
+        pillRefreshSwitch.setOnCheckedChangeListener { _, checked ->
+            pill.showRefresh = checked
+            if (uiPrefs.pillRefresh != checked) saveUi(uiPrefs.copy(pillRefresh = checked))
         }
     }
 
@@ -555,6 +666,10 @@ class ControlPanel(
         const val FADE_MS = 150L
         const val FLASH_MS = 2500L
         const val FINISH_FLASH_MS = 4000L
+        const val RELOAD_DEBOUNCE_MS = 800L
+        const val MIN_PAGE_PROGRESS = 8
+        const val PROGRESS_LINGER_MS = 250L
+        const val STALLED_LOAD_MS = 30_000L
         const val MAX_LOG_LINES = 40
         const val VISIBLE_LOG_LINES = 8
         const val MENU_STOP = 1

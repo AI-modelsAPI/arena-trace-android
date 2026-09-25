@@ -15,20 +15,22 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Pinned image: ubuntu-latest moves to a new Ubuntu release in Oct 2026.
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
 
       # No gradle wrapper is committed; install Gradle explicitly (AGP 8.5
       # requires Gradle 8.7+). Caches are handled by setup-gradle.
+      # v5 = Node 24 runtime, MIT-licensed (v6 moved caching to a proprietary component).
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v5
         with:
           gradle-version: '8.9'
 
@@ -58,20 +60,51 @@ jobs:
           ARENA_KEY_PASSWORD: ${{ secrets.ARENA_KEY_PASSWORD }}
         run: gradle assembleRelease --no-daemon --stacktrace 2>&1 | tee "$RUNNER_TEMP/assemble-release.log"
 
+      # Versioned file names; uploaded as plain .apk files (archive: false), so the
+      # artifact downloads straight to an installable APK instead of a zip.
+      - name: Name APKs
+        shell: bash
+        run: |
+          version=$(sed -n 's/^ *versionName = "\(.*\)".*/\1/p' app/build.gradle.kts | head -n 1)
+          [ -n "$version" ] || { echo "::error::versionName not found in app/build.gradle.kts"; exit 1; }
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/arena-trace-v${version}-debug.apk"
+          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            cp app/build/outputs/apk/release/app-release.apk "dist/arena-trace-v${version}-release.apk"
+          fi
+          echo "APK_VERSION=${version}" >> "$GITHUB_ENV"
+
       - name: Upload signed release APK
+        id: upload_release
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: arena-trace-release-apk
-          path: app/build/outputs/apk/release/app-release.apk
+          path: dist/arena-trace-v${{ env.APK_VERSION }}-release.apk
+          archive: false
           if-no-files-found: error
 
       - name: Upload debug APK
-        uses: actions/upload-artifact@v4
+        id: upload_debug
+        uses: actions/upload-artifact@v7
         with:
-          name: arena-trace-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: dist/arena-trace-v${{ env.APK_VERSION }}-debug.apk
+          archive: false
           if-no-files-found: error
+
+      # Direct download links at the top of the run page.
+      - name: Summary
+        shell: bash
+        env:
+          RELEASE_URL: ${{ steps.upload_release.outputs.artifact-url }}
+          DEBUG_URL: ${{ steps.upload_debug.outputs.artifact-url }}
+        run: |
+          {
+            echo "### Arena Trace v${APK_VERSION}"
+            if [ -n "$RELEASE_URL" ]; then
+              echo "- 正式签名版（推荐，可覆盖升级）：[arena-trace-v${APK_VERSION}-release.apk](${RELEASE_URL})"
+            fi
+            echo "- 调试版：[arena-trace-v${APK_VERSION}-debug.apk](${DEBUG_URL})"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Compiler errors, Gradle failure summaries and failed unit tests become
       # ::error annotations on the check run.

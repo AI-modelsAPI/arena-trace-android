@@ -13,8 +13,8 @@ android {
         applicationId = "com.ati.arena"
         minSdk = 26
         targetSdk = 34
-        versionCode = 6
-        versionName = "0.3.0"
+        versionCode = 7
+        versionName = "0.4.0"
     }
 
     // Fixed release signing (keystore lives in GitHub Secrets; CI decodes it and
@@ -58,6 +58,9 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.coordinatorlayout:coordinatorlayout:1.2.0")
     implementation("androidx.recyclerview:recyclerview:1.3.2")
+    // Origin-restricted page channel + document-start script injection (with a
+    // runtime fallback when the device's WebView lacks either feature).
+    implementation("androidx.webkit:webkit:1.11.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

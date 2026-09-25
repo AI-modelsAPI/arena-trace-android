@@ -399,7 +399,9 @@ class ProbeController(
             val waiter = CompletableDeferred<JSONObject>()
             pending[reqId] = waiter
             try {
-                val call = "(function(){if(!window.ArenaProbe||!window.ArenaConversationRename)return 'missing';" +
+                // The bridge is checked too: on the message channel it is defined by
+                // bridge.js, so a page that lost the scripts lost it as well.
+                val call = "(function(){if(!window.ArenaProbe||!window.ArenaConversationRename||!window.ArenaProbeBridge)return 'missing';" +
                     "window.ArenaProbe.call(${JSONObject.quote(action)},${JSONObject.quote(argsJson)},${JSONObject.quote(reqId)});" +
                     "return 'ok';})()"
                 val status = CompletableDeferred<String>()

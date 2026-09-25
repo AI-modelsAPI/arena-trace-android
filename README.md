@@ -1,61 +1,102 @@
-# Arena Trace (Android)
+# Arena Trace（Android）
 
-Chrome 扩展 `arena-trace-inspector` 的原生 Android 移植骨架。用 WebView 打开 arena.ai，
-页面层 JS 钩子截获运行令牌，原生层拉取 trace 和额度，悬浮卡片展示结果。
+Chrome 扩展 `arena-trace-inspector` 的原生 Android 版。应用用 WebView 打开 arena.ai，页面脚本截获每一轮对话的运行令牌，原生层再拉取 trace，得到服务端实际使用的模型，同时显示额度。另外提供自动探针、算式标题清理和快捷发送。
+
+## 下载安装
+
+每次推送到 `main` 或 `arena/**` 分支，GitHub Actions 都会跑单元测试并构建 APK。
+
+1. 打开仓库的 **Actions → Android Build**，进入最新一次成功的运行。
+2. 运行页顶部的 Summary 里有直接下载链接，页面底部的 **Artifacts** 里也有：
+   - `arena-trace-vX.Y.Z-release.apk`：正式签名版，推荐安装。使用固定签名，新版本可以直接覆盖升级。
+   - `arena-trace-vX.Y.Z-debug.apk`：调试版。
+3. 下载到的就是 `.apk` 文件，直接安装即可（从 v0.4.0 起不再打包成 zip）。
+
+注意：
+
+- 仓库是私有的，下载前要在浏览器里登录有权限的 GitHub 账号。
+- 两个版本包名相同但签名不同，不能互相覆盖安装。换版本时要先卸载。
+- 产物保留 90 天。
+
+## 功能
+
+- **模型识别**：每个对话单独记录每一轮实际使用的模型，模型中途被切换时会标出来。切换对话时显示的是当前对话自己的记录，不会串到别的对话。记录只保存在本机，重启后仍可查看。
+- **额度**：显示剩余额度百分比和重置倒计时。低于 20% 显示黄色，低于 10% 显示红色。切换账号后会立即刷新；遇到 429 会按 Retry-After 退避。
+- **自动探针**：自动新建对话并发送算式，直到命中目标模型。目标支持逗号分隔和 `/正则/`，可以设置最多轮数，也可以选择命中全部目标才停止。命中后可以自动重命名会话，格式为 `前缀 + 模型名 + -001`，前缀可自定义，编号按前缀和模型分别累计。**探针会发送真实消息并消耗额度。**
+- **清理算式标题**：把标题是纯算式（如 `12+34=`）的对话归档，包括侧栏里懒加载的旧对话。如果当前打开的就是算式对话，会先切到新对话再归档。只归档，不删除。
+- **快捷发送**：把预设的内容发送到当前对话。
+- **链接新标签页**：在对话里点链接不会再覆盖当前对话，而是在应用内新开一个标签页，对话在下面继续运行。标签页里可以刷新、在浏览器中打开、复制或分享链接。返回键先在标签页内后退，退到头后关闭标签页。`mailto:`、`tel:`、`intent:` 这类链接交给对应的应用打开。
+
+## 界面操作
+
+**悬浮窗**（可拖到屏幕任意一侧，会自动贴边）：
+
+| 操作 | 作用 |
+|---|---|
+| 点击 | 打开控制面板 |
+| 点击右端的 ⟳ | 刷新页面（页面加载时图标会旋转，顶部显示加载进度条） |
+| 长按 | 快捷菜单：开始/停止探针、清理、快捷发送、刷新、打开面板 |
+| 拖动 | 移动位置 |
+
+**控制面板**（底部弹出，下滑、点空白处或按返回键关闭）：
+
+- 顶部：当前模型、额度和倒计时、最近一条活动（点开可以看日志），右侧是 ⟳ 刷新按钮。
+- **对话**：当前对话每一轮使用的模型，最新的在最上面。
+- **探针**：目标、轮数、停止条件、自动重命名和前缀（带实时预览）。
+- **工具**：清理算式标题、快捷发送、页面后退/前进/刷新。另有开关「悬浮窗显示刷新按钮」。
+
+所有刷新入口都有防连点。探针或清理正在运行时刷新，会先询问是否停止任务。
 
 ## 构建
 
-**远端构建（推荐，无需本机 Android SDK）**：推送到 `main` 或在 Actions 页手动触发
-`Android Build` 工作流，即由 GitHub Actions 跑 JVM 单元测试并构建调试 APK；产物在
-该次运行的 **Artifacts → `arena-trace-debug-apk`** 下载（无需登录态校验，调试签名可直接安装）。
+推荐使用远端构建（见上文「下载安装」），本机不需要安装 Android SDK。
 
-**本机构建环境要求**：JDK 17、Gradle 8.7、Android SDK 34（AGP 8.5.2 / Kotlin 2.0.21）。Java 与 Kotlin
-的字节码目标已统一为 17（`app/build.gradle.kts` 的 `compileOptions` 与 `kotlin.compilerOptions`）。
+本机构建需要 JDK 17、Gradle 8.7 以上（CI 使用 8.9）和 Android SDK 34。技术栈：AGP 8.5.2、Kotlin 2.0.21，minSdk 26。
 
-Android Studio：
-1. 安装 Android Studio（含 Android SDK 34，使用 JDK 17）
-2. 打开本目录，等待 Gradle 同步完成
-3. 连接手机（开 USB 调试）或起模拟器，点 Run
-
-命令行（调试包）：
 ```bash
-./gradlew testDebugUnitTest assembleDebug   # 若已配置 Gradle Wrapper
-# 或使用本机 gradle：
 gradle testDebugUnitTest assembleDebug
 ```
-产物：`app/build/outputs/apk/debug/app-debug.apk`（调试签名）。
 
-> 说明：本仓库暂无单元测试，`testDebugUnitTest` 为 `NO-SOURCE`；编译通过不等于已在真机验证登录与令牌截获。
-> 校验方法与 APK 摘要见 `docs/verification/2026-09-22-jvm17-build.md`。
+产物：`app/build/outputs/apk/debug/app-debug.apk`。
 
-## 架构对照（扩展 → 本工程）
+正式签名需要设置环境变量 `ARENA_KEYSTORE`、`ARENA_KEYSTORE_PASSWORD`、`ARENA_KEY_ALIAS` 和 `ARENA_KEY_PASSWORD`。CI 从 Secrets 解出签名文件；本机不设这些变量时，只会生成未签名的 release 包。
 
-| 扩展模块 | 本工程 | 说明 |
-|---|---|---|
-| `snoop.js`（页面钩子） | `app/src/main/assets/snoop.js` | 几乎原样，仅把 `postMessage` 换成 `ArenaTrace.onSnoop()` 桥 |
-| `snoop-bridge.js` | `bridge/ArenaBridge.kt` | `@JavascriptInterface` 直达原生层 |
-| `core.js validateToken` | `net/TraceClient.kt validate()` | 令牌校验规则逐条移植（pub/iss/aud/exp/scope） |
-| `background.js` trace 轮询 | `net/TraceClient.kt fetchModels()` | 同一 Trigger.dev 接口，8 次 × 3 秒轮询 |
-| `core.js extractModels` | `net/TraceClient.kt extractModels()` | 只读 `ai.streamText.doStream` 的 cube 标签 |
-| `pulse.js` + 额度缓存 | `net/PulseClient.kt` + `MainActivity` | 60 秒轮询；cookie 签名变化（切账号）立即刷新；429 退避 |
-| HUD 浮层（含进度条三色） | `res/layout/activity_main.xml` 卡片 | 剩余 <20% 黄、<10% 红、其余绿；倒计时每秒跳动 |
+### 测试
 
-## 已实现
+`app/src/test` 下共有 185 个 JVM 单元测试，覆盖协议解析、会话路由、轮次记录、历史存储、探针与清理规则、链接路由、页面通道消息和界面文案。CI 每次构建都会运行。
 
-- WebView 打开 arena.ai，Cookie 与页面登录态共享
-- 发送消息后自动截获令牌 → 拉 trace → 显示服务端模型名
-- 额度百分比 + 进度条 + 重置倒计时（秒级）
-- 切账号即时刷新额度；429 按 Retry-After 退避
+## 架构
 
-## 待移植（二期）
+| 目录 | 内容 |
+|---|---|
+| `assets/bridge.js` | 页面通道前置脚本：把页面脚本的调用转发到来源受限的消息通道 |
+| `assets/snoop.js` | 挂接 fetch/EventSource，只截取会话流里的公开运行令牌，不读取对话内容 |
+| `assets/probe.js`、`conversation-rename.js` | 探针与清理的单步 DOM 操作（新建、发送、重命名、归档、侧栏扫描） |
+| `bridge/` | `PageBridge` 负责页面到原生的通道；`BridgeMessage` 定义消息格式 |
+| `protocol/` | 令牌校验、trace 模型提取 |
+| `session/` | 令牌 → 轮次 → trace 的完整流程：`SessionRouting`、`TurnIntake`、`TurnTracker`、`TraceCoordinator` |
+| `net/` | trace 与额度请求、预热判定 |
+| `probe/` | 探针和清理的编排（`ProbeController`）与纯规则（`ProbeLogic`） |
+| `store/` | 本地存储：对话历史、面板设置、重命名计数 |
+| `web/` | `LinkPolicy`（链接去向判定）、`ExternalLinks`（交给其他应用打开） |
+| `ui/` | 悬浮窗 `StatusPillView`、控制面板 `ControlPanel`、链接标签页 `LinkTab`，以及所有界面文案 `HudFormat` |
 
-- 自动抽卡 / 自动探针（`auto-draw.js`：新建对话、填 prompt、点发送、目标匹配、命中改名加 -NNN 后缀）
-- 一键清理探测残留（侧栏算式标题归档）
-- 会话历史本地记录（`history.js` → Room/SharedPreferences）
-- HUD 拖动 / 收起自动隐藏
+凡是不依赖 Android 的逻辑都放在纯 Kotlin 类里，便于单元测试。
 
-## 注意
+### 页面通道
 
-- `chrome.debugger` 捕获通道在 WebView 里不存在，本工程只保留页面钩子通道；
-  如果 Arena 把令牌移出 SSE 响应体，需要改用 `WebViewClient.shouldInterceptRequest` 补一条腿
-- snoop.js 在 `onPageFinished` 注入；若 Arena 首屏就开会话流，可改到 `onPageStarted` 注入
+- 如果设备上的 WebView 支持，会用 androidx.webkit 的 `addWebMessageListener` 建立消息通道。通道对象只注入到 `https://arena.ai` 的页面，页面里不暴露任何 Java 对象，其他来源的页面和 iframe 都拿不到。
+- 如果支持文档起始注入（`addDocumentStartJavaScript`），`snoop.js` 会在 Arena 自己的脚本之前运行，页面首屏发起的会话流也能截到。Cloudflare 预热页面不注入。
+- 旧版 WebView 会自动退回到 `addJavascriptInterface` 加页面加载后注入的方式。两种通道只会启用一种，不会重复上报。
+
+## 隐私与安全
+
+- 令牌不写日志，也不落盘。本地只保存对话对应的模型、不透明的轮次键、面板设置和重命名计数，不保存 cookie、trace 或对话内容。
+- 清理只处理纯算式标题，只归档，不删除，不会动当前正在查看的非算式对话。
+- 链接标签页与对话共享登录状态，但不注入任何页面脚本或通道。
+- 交给外部应用的 Intent 只允许 BROWSABLE 目标，并去掉显式组件，页面无法借此打开应用内部的界面。
+
+## 已知限制
+
+- 网页里的「选择文件」上传暂不支持（未实现文件选择器）。
+- Arena 的对话在页面内部滚动，因此不提供下拉刷新，请使用 ⟳ 按钮刷新。

@@ -1,8 +1,11 @@
 package com.ati.arena
 
 import android.os.Bundle
+import android.os.Message
 import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.OnBackPressedCallback
@@ -10,8 +13,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
-import com.ati.arena.bridge.ArenaBridge
-import com.ati.arena.bridge.ProbeBridge
+import com.ati.arena.bridge.PageBridge
 import com.ati.arena.net.PulseClient
 import com.ati.arena.net.PulseTiming
 import com.ati.arena.net.TraceClient
@@ -24,7 +26,10 @@ import com.ati.arena.store.HistoryLogic
 import com.ati.arena.store.Store
 import com.ati.arena.ui.ControlPanel
 import com.ati.arena.ui.HudFormat
+import com.ati.arena.ui.LinkTab
 import com.ati.arena.ui.TaskState
+import com.ati.arena.web.ExternalLinks
+import com.ati.arena.web.LinkPolicy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -33,15 +38,19 @@ import kotlinx.coroutines.withContext
 
 /**
  * Hosts the Arena WebView and wires the pieces together:
- *  - page scripts (snoop / rename / probe) → [TraceCoordinator] → per-conversation turns;
+ *  - page scripts (snoop / rename / probe) → [PageBridge] → [TraceCoordinator] →
+ *    per-conversation turns;
  *  - [ProbeController] for probe runs, cleanup sweeps and quick send;
  *  - the quota pulse loop;
- *  - [ControlPanel], the overlay UI, which only renders what it is given here.
+ *  - [ControlPanel], the overlay UI, which only renders what it is given here;
+ *  - [LinkTab]: links never navigate the conversation away, they open in a tab.
  */
 class MainActivity : AppCompatActivity(), ControlPanel.Actions {
 
     private lateinit var webView: WebView
     private lateinit var panel: ControlPanel
+    private lateinit var linkTab: LinkTab
+    private lateinit var bridge: PageBridge
     private lateinit var store: Store
     private lateinit var probe: ProbeController
 
@@ -69,18 +78,22 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
     private var advancedToAgent = false
     private var warmUpElapsed = 0L
 
+    // Order matters: bridge.js defines the page → app API the others call, and
+    // conversation-rename exposes ArenaConversationRename, which probe.js's
+    // rename/archive actions use. All four are idempotent.
     private val pageScripts: List<String> by lazy {
-        // Order matters: conversation-rename exposes ArenaConversationRename, which
-        // probe.js's rename/archive actions call; inject it before probe.js.
-        listOf("snoop.js", "conversation-rename.js", "probe.js").map { asset ->
-            assets.open(asset).bufferedReader().use { it.readText() }
-        }
+        PAGE_SCRIPTS.map { asset -> assets.open(asset).bufferedReader().use { it.readText() } }
     }
+
+    // At document start only the bridge + network tap are needed: snoop must hook
+    // fetch/EventSource before Arena's own code runs; the DOM helpers wait for load.
+    private val documentStartScript: String by lazy { pageScripts[0] + "\n;\n" + pageScripts[1] }
 
     private val backCallback = object : OnBackPressedCallback(true) {
         override fun handleOnBackPressed() {
             when {
                 panel.handleBack() -> Unit
+                linkTab.handleBack() -> Unit
                 webView.canGoBack() -> webView.goBack()
                 else -> {
                     // Nothing of ours to go back to: let the system handle it.
@@ -104,6 +117,7 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
             onChanged = ::onTurnsChanged,
         )
         panel = ControlPanel(this, store, this)
+        linkTab = LinkTab(this) { open -> panel.setLinkTabOpen(open) }
         probe = ProbeController(
             webView = webView,
             scope = lifecycleScope,
@@ -139,15 +153,21 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
-        webView.addJavascriptInterface(ArenaBridge(::onSnoopPayload), "ArenaTrace")
-        webView.addJavascriptInterface(
-            ProbeBridge(
-                resultHandler = { reqId, json -> probe.deliverResult(reqId, json) },
-                logHandler = { line -> runOnUiThread { if (!isDestroyed) panel.log(line) } },
-            ),
-            "ArenaProbeBridge",
+        // target=_blank / window.open become onCreateWindow → the link tab, instead of
+        // replacing the conversation. Script-opened windows still need a user gesture.
+        webView.settings.setSupportMultipleWindows(true)
+        webView.settings.javaScriptCanOpenWindowsAutomatically = false
+        bridge = PageBridge(
+            webView,
+            onSnoop = ::onSnoopPayload,
+            onResult = { reqId, json -> probe.deliverResult(reqId, json) },
+            onLog = { line -> runOnUiThread { if (!isDestroyed) panel.log(line) } },
         )
+        if (!bridge.usesMessageChannel) panel.log(getString(R.string.log_legacy_bridge))
         webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
+                routeNavigation(view, request)
+
             override fun onPageFinished(view: WebView, url: String) {
                 onArenaPageFinished(view, url)
             }
@@ -157,6 +177,39 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
             override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
                 onArenaUrlChanged(url)
             }
+        }
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onCreateWindow(view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message): Boolean =
+                isUserGesture && !isFinishing && linkTab.acceptWindow(resultMsg)
+
+            override fun onProgressChanged(view: WebView, newProgress: Int) {
+                panel.showPageProgress(newProgress)
+            }
+        }
+        webView.setDownloadListener { url, _, _, _, _ -> ExternalLinks.download(this, url) }
+    }
+
+    /**
+     * Same-window main-frame navigations. Arena's own pages, redirects and sign-in
+     * flows load in place; a tapped link to another site opens in the link tab;
+     * mailto:/tel:/intent: … go to other apps (see [LinkPolicy]).
+     */
+    private fun routeNavigation(view: WebView, request: WebResourceRequest): Boolean {
+        if (!request.isForMainFrame) return false
+        val uri = request.url
+        val hit = view.hitTestResult?.type
+        val linkClick = hit == WebView.HitTestResult.SRC_ANCHOR_TYPE || hit == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE
+        return when (LinkPolicy.routeMain(uri.scheme, uri.host, uri.path, request.hasGesture(), request.isRedirect, linkClick)) {
+            LinkPolicy.Route.IN_PLACE -> false
+            LinkPolicy.Route.NEW_TAB -> {
+                linkTab.open(uri.toString())
+                true
+            }
+            LinkPolicy.Route.EXTERNAL_APP -> {
+                ExternalLinks.open(this, uri) { fallback -> linkTab.open(fallback) }
+                true
+            }
+            LinkPolicy.Route.BLOCK -> true
         }
     }
 
@@ -200,6 +253,7 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
             pollWarmUp(view)
             return
         }
+        ensureDocumentStartScript()
         injectPageScripts(view)
         onPathChanged(path)
     }
@@ -269,10 +323,20 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
     private fun advance(view: WebView) {
         if (advancedToAgent || isFinishing) return
         advancedToAgent = true
+        ensureDocumentStartScript()
         view.loadUrl(ARENA_AGENT)
     }
 
-    /** Inject the page scripts (each is idempotent, so re-injection is safe). */
+    /**
+     * From the first real Arena page on, run the bridge + network tap at document
+     * start (when the WebView supports it). Deliberately not during the Cloudflare
+     * warm-up, so the challenge page runs untouched.
+     */
+    private fun ensureDocumentStartScript() {
+        bridge.addDocumentStartScript(documentStartScript)
+    }
+
+    /** Inject the page scripts after load (each is idempotent, so re-injection is safe). */
     private fun injectPageScripts(view: WebView) {
         for (js in pageScripts) view.evaluateJavascript(js, null)
     }
@@ -341,14 +405,17 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
     override fun onResume() {
         super.onResume()
         webView.onResume()
+        linkTab.onResume()
     }
 
     override fun onPause() {
+        linkTab.onPause()
         webView.onPause()
         super.onPause()
     }
 
     override fun onDestroy() {
+        linkTab.release()
         panel.release()
         coordinator.cancelAll()
         probe.stop()
@@ -360,6 +427,7 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
     private companion object {
         const val ARENA_HOME = "https://arena.ai/"
         const val ARENA_AGENT = "https://arena.ai/agent"
+        val PAGE_SCRIPTS = listOf("bridge.js", "snoop.js", "conversation-rename.js", "probe.js")
         const val WARMUP_POLL_MS = 400L
         const val WARMUP_MAX_MS = 15_000L
 

@@ -1,8 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Full-screen WebView with two overlays:
-     * a floating status pill (drag to move, tap for the panel, long-press for quick actions)
+<!-- Full-screen Arena WebView with, from bottom to top:
+     * a thin page-load bar along the top edge
+     * the link tab: pages opened from links load here, over the conversation
+       (which keeps running underneath); hidden until a link is opened
+     * a floating status pill (drag to move, tap for the panel, ⟳ to refresh,
+       long-press for quick actions)
      * a bottom-sheet control panel (panel_sheet.xml) behind a tap-to-dismiss scrim. -->
 <androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent">
@@ -11,6 +16,129 @@
         android:id="@+id/web"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
+
+    <com.google.android.material.progressindicator.LinearProgressIndicator
+        android:id="@+id/page_progress"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:max="100"
+        android:visibility="invisible"
+        app:indicatorColor="@color/brand"
+        app:indicatorTrackGapSize="0dp"
+        app:trackColor="@android:color/transparent"
+        app:trackCornerRadius="0dp"
+        app:trackStopIndicatorSize="0dp"
+        app:trackThickness="2dp" />
+
+    <LinearLayout
+        android:id="@+id/tab_layer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/surface"
+        android:clickable="true"
+        android:focusable="true"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:minHeight="52dp"
+            android:orientation="horizontal"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/tab_close"
+                style="@style/Widget.Material3.Button.IconButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:contentDescription="@string/tab_close"
+                android:tooltipText="@string/tab_close"
+                app:icon="@drawable/ic_close"
+                app:iconTint="@color/on_surface" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/tab_title"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:fontFamily="sans-serif-medium"
+                    android:singleLine="true"
+                    android:text="@string/tab_loading"
+                    android:textColor="@color/on_surface"
+                    android:textSize="14sp" />
+
+                <TextView
+                    android:id="@+id/tab_host"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="middle"
+                    android:singleLine="true"
+                    android:textColor="@color/on_surface_muted"
+                    android:textSize="11sp" />
+            </LinearLayout>
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/tab_reload"
+                style="@style/Widget.Material3.Button.IconButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:contentDescription="@string/tab_reload"
+                android:tooltipText="@string/tab_reload"
+                app:icon="@drawable/ic_reload"
+                app:iconTint="@color/on_surface_muted" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/tab_more"
+                style="@style/Widget.Material3.Button.IconButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:contentDescription="@string/tab_more"
+                android:tooltipText="@string/tab_more"
+                app:icon="@drawable/ic_more"
+                app:iconTint="@color/on_surface_muted" />
+        </LinearLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="@color/outline" />
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+            <FrameLayout
+                android:id="@+id/tab_web_holder"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+
+            <com.google.android.material.progressindicator.LinearProgressIndicator
+                android:id="@+id/tab_progress"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top"
+                android:max="100"
+                android:visibility="invisible"
+                app:indicatorColor="@color/brand"
+                app:indicatorTrackGapSize="0dp"
+                app:trackColor="@android:color/transparent"
+                app:trackCornerRadius="0dp"
+                app:trackStopIndicatorSize="0dp"
+                app:trackThickness="2dp" />
+        </FrameLayout>
+    </LinearLayout>
 
     <com.ati.arena.ui.StatusPillView
         android:id="@+id/pill"

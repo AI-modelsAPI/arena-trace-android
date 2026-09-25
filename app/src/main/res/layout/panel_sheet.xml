@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Bottom-sheet control panel. Layout from top to bottom:
-     handle · header (model / quota / headline) · quota bar · latest activity (tap → log)
-     · segmented tabs · one of three pages (对话 / 探针 / 工具).
+     handle · header (model / quota / headline / ⟳ refresh) · quota bar
+     · latest activity (tap → log) · segmented tabs · one of three pages (对话 / 探针 / 工具).
      Width is capped in code (ControlPanel) so tablets and landscape get a centred card. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
@@ -28,14 +28,14 @@
         android:layout_marginBottom="8dp"
         android:background="@drawable/bg_handle" />
 
-    <!-- Header: current model + headline on the left, quota on the right. -->
+    <!-- Header: current model + headline on the left, quota and refresh on the right. -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:paddingStart="20dp"
-        android:paddingEnd="20dp">
+        android:paddingEnd="8dp">
 
         <LinearLayout
             android:layout_width="0dp"
@@ -92,6 +92,17 @@
                 android:singleLine="true"
                 android:textAppearance="@style/TextAppearance.ArenaTrace.Caption" />
         </LinearLayout>
+
+        <!-- One-tap page refresh (closes the panel). -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/hud_reload"
+            style="@style/Widget.Material3.Button.IconButton.Filled.Tonal"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:contentDescription="@string/reload_page"
+            android:tooltipText="@string/reload_page"
+            app:icon="@drawable/ic_reload" />
     </LinearLayout>
 
     <com.google.android.material.progressindicator.LinearProgressIndicator
@@ -510,6 +521,15 @@
                         android:contentDescription="@string/nav_reload"
                         app:icon="@drawable/ic_reload" />
                 </LinearLayout>
+
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/pill_refresh_switch"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="44dp"
+                    android:text="@string/pill_refresh_switch"
+                    android:textColor="@color/on_surface"
+                    android:textSize="14sp" />
             </LinearLayout>
         </androidx.core.widget.NestedScrollView>
     </FrameLayout>

@@ -6,6 +6,7 @@
     <string name="model_unknown">模型待确认</string>
     <string name="quota_unknown">—</string>
     <string name="log_expand">展开日志</string>
+    <string name="reload_page">刷新页面</string>
 
     <!-- Tabs -->
     <string name="tab_session">对话</string>
@@ -44,6 +45,7 @@
     <string name="nav_back">后退</string>
     <string name="nav_forward">前进</string>
     <string name="nav_reload">刷新</string>
+    <string name="pill_refresh_switch">悬浮窗显示刷新按钮</string>
 
     <!-- Quick-action menu (long-press the pill) -->
     <string name="menu_probe">开始探针</string>
@@ -53,4 +55,29 @@
     <string name="menu_stop_cleanup">停止清理</string>
     <string name="menu_reload">刷新页面</string>
     <string name="menu_panel">打开面板</string>
+
+    <!-- Refresh while a task runs -->
+    <string name="reload_confirm_title">刷新页面？</string>
+    <string name="reload_confirm_probe">探针正在运行，刷新会中断本次探针。</string>
+    <string name="reload_confirm_cleanup">清理正在进行，刷新会中断本次清理。</string>
+    <string name="reload_confirm_ok">停止并刷新</string>
+    <string name="action_cancel">取消</string>
+
+    <!-- Link tab (links opened from the Arena page) -->
+    <string name="tab_loading">加载中…</string>
+    <string name="tab_close">关闭标签页</string>
+    <string name="tab_reload">刷新标签页</string>
+    <string name="tab_more">更多</string>
+    <string name="tab_open_browser">在浏览器中打开</string>
+    <string name="tab_copy_link">复制链接</string>
+    <string name="tab_share">分享链接</string>
+    <string name="tab_unavailable">无法打开新标签页（WebView 不可用）</string>
+    <string name="link_clip_label">链接</string>
+    <string name="link_copied">已复制链接</string>
+    <string name="link_no_app">没有可以打开此链接的应用</string>
+    <string name="download_handed_off">已交给浏览器下载</string>
+    <string name="download_unsupported">无法下载此文件</string>
+
+    <!-- Activity log -->
+    <string name="log_legacy_bridge">WebView 版本较旧，已使用兼容页面通道；建议更新 Android System WebView</string>
 </resources>

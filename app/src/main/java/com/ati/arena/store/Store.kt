@@ -103,11 +103,15 @@ class Store(context: Context) : TurnIntake.History {
 
     // ---- overlay UI state ----
 
-    /** Where the floating pill sits (side + vertical fraction) and the last panel tab. */
+    /**
+     * Where the floating pill sits (side + vertical fraction), whether it shows its
+     * refresh button, and the last panel tab.
+     */
     data class UiPrefs(
         val pillOnRight: Boolean = true,
         val pillY: Float = DEFAULT_PILL_Y,
         val lastTab: Int = 0,
+        val pillRefresh: Boolean = true,
     )
 
     fun loadUiPrefs(): UiPrefs = runCatching {
@@ -115,6 +119,7 @@ class Store(context: Context) : TurnIntake.History {
             pillOnRight = prefs.getBoolean(KEY_PILL_RIGHT, true),
             pillY = prefs.getFloat(KEY_PILL_Y, DEFAULT_PILL_Y).let { if (it.isNaN()) DEFAULT_PILL_Y else it.coerceIn(0f, 1f) },
             lastTab = prefs.getInt(KEY_LAST_TAB, 0).coerceAtLeast(0),
+            pillRefresh = prefs.getBoolean(KEY_PILL_REFRESH, true),
         )
     }.getOrDefault(UiPrefs())
 
@@ -123,6 +128,7 @@ class Store(context: Context) : TurnIntake.History {
             .putBoolean(KEY_PILL_RIGHT, p.pillOnRight)
             .putFloat(KEY_PILL_Y, p.pillY.coerceIn(0f, 1f))
             .putInt(KEY_LAST_TAB, p.lastTab.coerceAtLeast(0))
+            .putBoolean(KEY_PILL_REFRESH, p.pillRefresh)
             .apply()
     }
 
@@ -131,6 +137,7 @@ class Store(context: Context) : TurnIntake.History {
         const val KEY_PILL_RIGHT = "ui_pill_right"
         const val KEY_PILL_Y = "ui_pill_y"
         const val KEY_LAST_TAB = "ui_last_tab"
+        const val KEY_PILL_REFRESH = "ui_pill_refresh"
         const val PREFS_NAME = "arena_trace"
         const val KEY_HISTORY = "session_models"
         const val KEY_TARGETS = "probe_targets"
