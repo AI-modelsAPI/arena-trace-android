@@ -131,6 +131,11 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
             },
         )
         panel = ControlPanel(this, store, this)
+        // Version marker: every future log paste tells us exactly which build
+        // produced it. PackageManager is used so the class has no BuildConfig
+        // dependency (keeps the local JVM test harness self-contained).
+        val ownVersion = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull()
+        panel.log("Arena Trace v" + (ownVersion ?: "?") + " 已就绪")
         linkTab = LinkTab(this) { open ->
             linkTabOpen = open
             panel.setLinkTabOpen(open)
@@ -165,6 +170,7 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
         // run and issue cf_clearance, then advance to /agent once ready.
         webView.loadUrl(ARENA_HOME)
         startPulseLoop()
+        navPollHandler.postDelayed(navPoller, NAV_POLL_MS)
     }
 
     private fun configureWebView() {
@@ -318,8 +324,35 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
         val next = HistoryLogic.sessionFromPath(path)
             ?: if (SessionRouting.isNewChatPath(path)) intake.newChatSession.orEmpty() else return
         if (!changed && next == displaySession) return
+        if (changed && next.isNotEmpty() && next != displaySession) {
+            // Visible confirmation that the panel followed the switch.
+            panel.log("已切换到当前对话的日志")
+        }
         displaySession = next
         refreshModelDisplay()
+    }
+
+    // ------------------------------------------------------------ path polling
+
+    private val navPollHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /**
+     * Belt-and-braces conversation tracking: WebViewClient callbacks +
+     * watchdog.js PATH pushes miss some SPA transitions in practice; a cheap
+     * periodic location read cannot. [onPathChanged] is idempotent, repeated
+     * same-path polls are a no-op.
+     */
+    private val navPoller = object : Runnable {
+        override fun run() {
+            if (isDestroyed) return
+            if (::webView.isInitialized) {
+                webView.evaluateJavascript("(location && location.pathname) || ''") { raw ->
+                    val path = raw?.trim()?.removeSurrounding("\"").orEmpty()
+                    if (path.startsWith("/") && path.length <= 512) onPathChanged(path)
+                }
+            }
+            navPollHandler.postDelayed(this, NAV_POLL_MS)
+        }
     }
 
     /** A conversation's turns changed (new turn, resolved, failed). Main thread. */
@@ -487,6 +520,7 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
     }
 
     override fun onDestroy() {
+        navPollHandler.removeCallbacks(navPoller)
         linkTab.release()
         panel.release()
         coordinator.cancelAll()
@@ -501,6 +535,7 @@ class MainActivity : AppCompatActivity(), ControlPanel.Actions {
         const val ARENA_AGENT = "https://arena.ai/agent"
         // watchdog.js emits "PATH|<pathname>" whenever the in-page URL changes.
         const val PATH_PREFIX = "PATH|"
+        const val NAV_POLL_MS = 1_500L
 
         // bridge.js must be first (defines the page → app API); watchdog.js polls
         // the conversation DOM and reports through the same bridge. All idempotent.

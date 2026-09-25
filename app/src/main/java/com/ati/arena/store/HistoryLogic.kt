@@ -67,6 +67,19 @@ object HistoryLogic {
     }
 
     /**
+     * Opaque key for a TOKEN, not a run. Arena does not guarantee a distinct
+     * run id per turn — a conversation can reuse one run (and even the same
+     * token) for every turn, while the token string itself still changes per
+     * run. Keying turns by the token's payload segment replays the same token
+     * to the same turn (dedupe) yet opens a new turn whenever arena issues a
+     * fresh token. The raw token is never persisted: only its hash is used.
+     */
+    fun tokenKey(token: String): String {
+        val payload = token.split('.').getOrNull(1) ?: token
+        return runKey(payload)
+    }
+
+    /**
      * Sanitize model names to the whitelist: trimmed, non-blank, deduped, length
      * capped, and at most [maxModels] of them. Rejects control characters.
      */

@@ -28,8 +28,9 @@ class TurnIntakeTest {
         }
     }
 
-    private fun token(runId: String, sessionId: String, exp: Long = far): String {
-        val claims = """{"pub":true,"iss":"https://id.trigger.dev","aud":"https://api.trigger.dev","exp":$exp,"scopes":["read:runs:$runId","read:sessions:$sessionId"]}"""
+    private fun token(runId: String, sessionId: String, exp: Long = far, jti: String = ""): String {
+        val jtiPart = if (jti.isEmpty()) "" else ""","jti":"$jti""""
+        val claims = """{"pub":true,"iss":"https://id.trigger.dev","aud":"https://api.trigger.dev","exp":$exp$jtiPart,"scopes":["read:runs:$runId","read:sessions:$sessionId"]}"""
         val payload = Base64.getUrlEncoder().withoutPadding().encodeToString(claims.toByteArray())
         return "eyJhbGciOiJIUzI1NiJ9.$payload.sig"
     }
@@ -152,6 +153,71 @@ class TurnIntakeTest {
         assertEquals(listOf("model-x"), i.view("s2").turns.map { it.model })
         assertTrue(i.view("s1").routed)
         assertFalse(i.view("s2").routed)
+    }
+
+    // ---- token identity (arena may reuse one run id — and even one token) ----
+
+    @Test
+    fun freshTokenForTheSameRunIdOpensANewTurn() {
+        // The reported bug: turn 2+ never appeared. Arena can scope every turn to
+        // one run id; keying turns by run id collapses them into turn 1. Keying
+        // by the token itself keeps replay dedupe but opens a turn per new token.
+        val i = intake()
+        val first = i.onToken(event("run_shared", "s1", page = "/agent/s1"), null, notInFlight) as Action.Fetch
+        i.onTraceResult("s1", first.turn.key, listOf("model-a"), "")
+        // A DIFFERENT token with the SAME run scope must be a new turn, not
+        // "known" — the old runKey(claims.runId) collapsed it into turn 1.
+        val second = i.onToken(
+            SnoopEvent("s1", token("run_shared", "s1", jti = "turn2"), "/agent/s1"),
+            null, notInFlight,
+        ) as Action.Fetch
+        assertEquals(2, second.turn.number)
+        // Replay of the first token is still the same turn (dedupe).
+        assertTrue(i.onToken(event("run_shared", "s1", page = "/agent/s1"), null, notInFlight) is Action.Known)
+        assertEquals(2, i.turns.turns("s1").size)
+    }
+
+    // ---- stream activity → refetch a grown run's trace ----
+
+    private fun activityEvent(session: String, page: String? = "/agent/$session") =
+        SnoopEvent(session, "", page, activity = true)
+
+    @Test
+    fun activityRefetchesAResolvedTurnWithItsRememberedToken() {
+        var clock = now
+        val i = TurnIntake(FakeHistory(), nowSeconds = { clock })
+        val a = i.onToken(event("run_a", "s1", page = "/agent/s1"), null, notInFlight) as Action.Fetch
+        i.onTraceResult("s1", a.turn.key, listOf("model-a"), "")
+
+        val q = i.onActivity(activityEvent("s1"), null, notInFlight)
+        assertTrue(q is Action.Query)
+        q as Action.Query
+        assertEquals("run_a", q.runId)
+        assertEquals(a.turn.key, q.turn.key)
+        // Cooldown: another ping right away does nothing.
+        assertTrue(i.onActivity(activityEvent("s1"), null, notInFlight) is Action.Known)
+        // After the cooldown, activity refetches again.
+        clock += TurnIntake.REFRESH_COOLDOWN_SECONDS
+        assertTrue(i.onActivity(activityEvent("s1"), null, notInFlight) is Action.Query)
+        // A pending (unresolved) turn is left alone: its fetch is already coming.
+        i.onToken(event("run_b", "s1", page = "/agent/s1"), null, notInFlight)
+        clock += TurnIntake.REFRESH_COOLDOWN_SECONDS
+        assertTrue(i.onActivity(activityEvent("s1"), null, notInFlight) is Action.Known)
+    }
+
+    @Test
+    fun activityOnAnotherPageOrAfterTokenExpiryDoesNothing() {
+        var clock = now
+        val i = TurnIntake(FakeHistory(), nowSeconds = { clock })
+        val a = i.onToken(event("run_a", "s1", page = "/agent/s1"), null, notInFlight) as Action.Fetch
+        i.onTraceResult("s1", a.turn.key, listOf("model-a"), "")
+        assertEquals(
+            Action.Ignored(TurnIntake.IgnoreReason.ROUTING),
+            i.onActivity(activityEvent("s1", page = "/leaderboard"), null, notInFlight),
+        )
+        // The remembered token expired → no refetch (trigger.dev tokens are short-lived).
+        clock = far + 10
+        assertTrue(i.onActivity(activityEvent("s1"), null, notInFlight) is Action.Known)
     }
 
     // ---- expiry / retries ----

@@ -17,7 +17,13 @@ import org.json.JSONObject
 object SessionRouting {
 
     /** A parsed snoop.js event: stream session, run token and the page path at capture time. */
-    data class SnoopEvent(val sessionId: String, val token: String, val pagePath: String?)
+    data class SnoopEvent(
+        val sessionId: String,
+        val token: String,
+        val pagePath: String?,
+        /** true for lightweight stream-activity pings (no token attached). */
+        val activity: Boolean = false,
+    )
 
     private const val MIN_TOKEN_LENGTH = 20
 
@@ -26,9 +32,11 @@ object SessionRouting {
         if (json.isNullOrEmpty() || json.length > 64 * 1024) return null
         val obj = runCatching { JSONObject(json) }.getOrNull() ?: return null
         val sessionId = obj.optString("sessionId")
-        val token = obj.optString("token")
-        if (!HistoryLogic.isValidSessionId(sessionId) || token.length < MIN_TOKEN_LENGTH) return null
+        if (!HistoryLogic.isValidSessionId(sessionId)) return null
         val page = if (obj.has("page") && !obj.isNull("page")) obj.optString("page") else null
+        if (obj.optString("type") == "activity") return SnoopEvent(sessionId, "", page, activity = true)
+        val token = obj.optString("token")
+        if (token.length < MIN_TOKEN_LENGTH) return null
         return SnoopEvent(sessionId, token, page)
     }
 

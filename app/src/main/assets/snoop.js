@@ -24,6 +24,21 @@
   const seen = new Set();
   const tokenCounts = new Map();
   const tappedStreams = new Set();
+  const lastPingAt = new Map();
+
+  // Arena may stream many replies through ONE run: every new frame on a session
+  // stream is "activity" the native side may want to refetch for. Pings are
+  // throttled hard (the native side applies its own cooldown too) and carry no
+  // content — only the session id and the page path.
+  function pingActivity(sessionId) {
+    const now = Date.now();
+    if (now - (lastPingAt.get(sessionId) || 0) < 15000) return;
+    lastPingAt.set(sessionId, now);
+    if (lastPingAt.size > 64) lastPingAt.delete(lastPingAt.keys().next().value);
+    try {
+      window.ArenaTrace && ArenaTrace.onSnoop(JSON.stringify({ type: 'activity', sessionId, page: location.pathname }));
+    } catch (_) {}
+  }
 
   function sessionFromUrl(url) {
     try {
@@ -99,6 +114,7 @@
     while ((m = JWT_LIKE.exec(text)) && budget-- > 0) emit(m[0], sessionId);
   }
   function scanChunk(text, sessionId) {
+    pingActivity(sessionId);
     scanSse(text, sessionId);
     scanRaw(text, sessionId);
   }

@@ -69,6 +69,12 @@ class SessionRoutingTest {
     }
 
     @Test
+    fun parsesActivityPings() {
+        val e = SessionRouting.parse("""{"type":"activity","sessionId":"s1","page":"/c/e1"}""")
+        assertEquals(SessionRouting.SnoopEvent("s1", "", "/c/e1", activity = true), e)
+    }
+
+    @Test
     fun parseRejectsMalformedPayloads() {
         assertNull(SessionRouting.parse(null))
         assertNull(SessionRouting.parse("not json"))

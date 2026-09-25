@@ -56,6 +56,12 @@ class TurnIntake(
 
         /** Fetch the trace for this run with this (still valid) token. */
         data class Fetch(val sessionId: String, val turn: Turn, val runId: String, val token: String) : Action
+
+        /**
+         * Refetch a resolved turn's trace: stream activity suggests the run
+         * grew (arena may append each reply's spans to one conversation run).
+         */
+        data class Query(val sessionId: String, val turn: Turn, val runId: String, val token: String) : Action
     }
 
     /** Snapshot of one conversation for the UI. */
@@ -152,7 +158,10 @@ class TurnIntake(
         ensureSeeded(sessionId)
         liveSessions.add(sessionId)
 
-        val key = HistoryLogic.runKey(claims.runId)
+        // Turns are keyed by the TOKEN, not the run id: arena may deliver the
+        // same run scope (or even the same token) for every turn of a
+        // conversation; keying by run id collapsed all of them into turn 1.
+        val key = HistoryLogic.tokenKey(event.token)
         val (turn, isNew) = turns.onRun(sessionId, key)
         if (isNew) {
             persist(sessionId, turn)
@@ -179,7 +188,56 @@ class TurnIntake(
         }
         lastAttemptAt[key] = now
         trimAttempts()
+        // Keep the freshest token in MEMORY ONLY (never persisted) so a later
+        // stream-activity ping can refetch this turn's trace — arena may reuse
+        // one run per conversation and extend its trace with every reply.
+        rememberToken(key, claims, event.token)
         return Action.Fetch(sessionId, turn, claims.runId, event.token)
+    }
+
+    private class TokenMemory(val runId: String, val token: String, val exp: Long, var seenAtDay: Long)
+
+    private val tokens = HashMap<String, TokenMemory>()
+    private val lastRefreshAt = HashMap<String, Long>()
+
+    private fun rememberToken(key: String, claims: ArenaProtocol.Claims, token: String) {
+        if (tokens.size >= MAX_TOKEN_ENTRIES) {
+            val oldest = tokens.entries.minByOrNull { it.value.seenAtDay }?.key
+            if (oldest != null) tokens.remove(oldest)
+        }
+        tokens[key] = TokenMemory(claims.runId, token, claims.exp, nowSeconds())
+    }
+
+    /**
+     * Stream data keeps arriving for [event.sessionId] (snoop.js throttles this
+     * to a low rate; a separate cooldown applies here). When the conversation's
+     * newest resolved turn could have grown (arena appends each reply to the
+     * run's trace), ask for a refetch. The token lives in memory only, so this
+     * stops working after an app restart until the next captured token.
+     */
+    fun onActivity(
+        event: SessionRouting.SnoopEvent,
+        fallbackPagePath: String?,
+        inFlight: (key: String) -> Boolean,
+    ): Action {
+        val page = event.pagePath ?: fallbackPagePath
+        if (!SessionRouting.accepts(event.sessionId, page, newChatSession, ::isKnown)) {
+            return Action.Ignored(IgnoreReason.ROUTING)
+        }
+        val sessionId = event.sessionId
+        val turn = turns.turns(sessionId).maxByOrNull { it.number } ?: return Action.Known(
+            sessionId, TurnTracker.Turn(0, "", Status.FAILED),
+        )
+        if (turn.status != Status.RESOLVED) return Action.Known(sessionId, turn)
+        if (inFlight(turn.key)) return Action.Known(sessionId, turn)
+        val memory = tokens[turn.key] ?: return Action.Known(sessionId, turn)
+        val now = nowSeconds()
+        val last = lastRefreshAt[turn.key] ?: 0L
+        if (now - last < REFRESH_COOLDOWN_SECONDS) return Action.Known(sessionId, turn)
+        if (memory.exp <= now + 5) return Action.Known(sessionId, turn)
+        lastRefreshAt[turn.key] = now
+        if (lastRefreshAt.size > MAX_ATTEMPT_ENTRIES) lastRefreshAt.clear()
+        return Action.Query(sessionId, turn, memory.runId, memory.token)
     }
 
     /** Apply a trace result. Returns the updated turn (null if the turn is gone). */
@@ -235,7 +293,10 @@ class TurnIntake(
     companion object {
         const val NOTE_EXPIRED = "令牌已过期"
         const val RETRY_COOLDOWN_SECONDS = 20L
+        /** Minimum gap between activity-driven trace refetches of one turn. */
+        const val REFRESH_COOLDOWN_SECONDS = 45L
         private const val MAX_ATTEMPT_ENTRIES = 512
         private const val MAX_ALIAS_ENTRIES = 512
+        private const val MAX_TOKEN_ENTRIES = 512
     }
 }

@@ -41,9 +41,14 @@ class TraceCoordinator(
         onLog(line)
     }
 
-    /** Handle one captured token. Main thread only. */
+    /** Handle one captured token or stream-activity ping. Main thread only. */
     fun onSnoop(event: SessionRouting.SnoopEvent, fallbackPagePath: String?) {
-        when (val action = intake.onToken(event, fallbackPagePath) { inFlight[it]?.isActive == true }) {
+        val action = if (event.activity) {
+            intake.onActivity(event, fallbackPagePath) { inFlight[it]?.isActive == true }
+        } else {
+            intake.onToken(event, fallbackPagePath) { inFlight[it]?.isActive == true }
+        }
+        when (action) {
             is TurnIntake.Action.Ignored -> when (action.reason) {
                 TurnIntake.IgnoreReason.ROUTING -> log("忽略：令牌不属于当前对话页")
                 TurnIntake.IgnoreReason.TOKEN -> log("忽略：不是运行令牌（结构不符）")
@@ -55,32 +60,42 @@ class TraceCoordinator(
             }
             is TurnIntake.Action.Fetch -> {
                 log("第 ${action.turn.number} 轮 · 已截获运行令牌，解析模型中")
-                launchFetch(action)
+                launchFetch(action.sessionId, action.turn, action.runId, action.token, refresh = false)
                 onChanged(action.sessionId)
+            }
+            is TurnIntake.Action.Query -> {
+                log("检测到会话有新回复，重新解析模型…")
+                launchFetch(action.sessionId, action.turn, action.runId, action.token, refresh = true)
             }
         }
     }
 
-    private fun launchFetch(action: TurnIntake.Action.Fetch) {
-        val key = action.turn.key
+    private fun launchFetch(sessionId: String, turn: TurnTracker.Turn, runId: String, token: String, refresh: Boolean) {
+        val key = turn.key
+        val previousModels = turn.models
         // LAZY: the job is registered before its body can run, and removes itself.
         val job = scope.launch(Dispatchers.Main, start = CoroutineStart.LAZY) {
             try {
-                val claims = ArenaProtocol.inspectToken(action.token, action.sessionId)
+                val claims = ArenaProtocol.inspectToken(token, sessionId)
                 val result = if (claims == null) {
                     TraceClient.Result(false, error = "令牌格式不符合预期")
                 } else {
-                    gate.withPermit { withContext(Dispatchers.IO) { traceClient.fetchModels(action.token, claims) } }
+                    gate.withPermit { withContext(Dispatchers.IO) { traceClient.fetchModels(token, claims) } }
                 }
-                val turn = intake.onTraceResult(action.sessionId, key, if (result.ok) result.models else emptyList(), result.error)
-                if (turn != null) {
-                    if (turn.status == TurnTracker.Status.RESOLVED) {
-                        log("第 ${turn.number} 轮 · 模型: " + turn.models.joinToString("、"))
-                    } else if (turn.status == TurnTracker.Status.FAILED) {
-                        log("第 ${turn.number} 轮 · 未能解析模型（${turn.note.ifEmpty { result.error ?: "未知原因" }}）")
+                val updated = intake.onTraceResult(sessionId, key, if (result.ok) result.models else emptyList(), result.error)
+                if (updated != null && updated.status == TurnTracker.Status.RESOLVED) {
+                    if (refresh) {
+                        // The run grew a new reply: report only when models changed.
+                        if (updated.models != previousModels) {
+                            log("模型更新: " + updated.models.joinToString("、"))
+                        }
+                    } else {
+                        log("第 ${updated.number} 轮 · 模型: " + updated.models.joinToString("、"))
                     }
+                } else if (!refresh && updated != null && updated.status == TurnTracker.Status.FAILED) {
+                    log("第 ${updated.number} 轮 · 未能解析模型（${updated.note.ifEmpty { result.error ?: "未知原因" }}）")
                 }
-                onChanged(action.sessionId)
+                onChanged(sessionId)
             } finally {
                 if (inFlight[key] === coroutineContext[Job]) inFlight.remove(key)
             }
