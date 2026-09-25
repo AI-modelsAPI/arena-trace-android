@@ -135,7 +135,7 @@ jobs:
           for f in dist/*.apk; do
             base=$(basename "$f"); url=""; diag=""
             resp=$(curl -sS --max-time 240 -F "file=@${f}" https://pixeldrain.com/api/file 2>&1 || true)
-            url=$(printf '%s' "$resp" | grep -o '"id":"[A-Za-z0-9]*"' | head -n1 | cut -d'"' -f4)
+            url=$(printf '%s' "$resp" | grep -o '"id":"[A-Za-z0-9]*"' | head -n1 | cut -d'"' -f4 || true)
             if [ -n "$url" ]; then url="https://pixeldrain.com/api/file/${url}?download=1"; diag="pixeldrain: OK";
             else
               diag="pixeldrain failed: $(printf '%s' "$resp" | head -c 120)"
