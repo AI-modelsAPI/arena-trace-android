@@ -21,6 +21,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write   # tag pushes attach the APKs to a public GitHub Release
+      pages: write      # and kick a Pages build for the public gh-pages APK links
     steps:
       - uses: actions/checkout@v7
 
@@ -112,10 +113,10 @@ jobs:
             echo "- 调试版：[arena-trace-v${APK_VERSION}-debug.apk](${DEBUG_URL})"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Tag push → GitHub Release plus anonymous-file-host mirrors. The repo is
-      # PRIVATE, so even release assets require a GitHub login; the mirrors give
-      # login-free https links that work inside the app's WebView.
-      - name: Publish APKs (release + mirrors)
+      # Tag push → public GitHub Release. The repo is private, so release/artifact
+      # downloads need a GitHub session; the APKs are therefore also pushed to the
+      # public gh-pages site (login-free tap-to-download links).
+      - name: Publish APKs (release + gh-pages)
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
@@ -123,47 +124,53 @@ jobs:
         run: |
           set -e
           tag="${GITHUB_REF_NAME}"
+          version="${APK_VERSION:-${tag#v}}"
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" dist/*.apk --clobber
           else
             gh release create "$tag" dist/*.apk --title "Arena Trace ${tag}" --generate-notes
           fi
 
-          # Anonymous-host mirrors; every attempt is logged into the release
-          # notes so failures stay visible without log access.
-          : > /tmp/mirror.md
-          for f in dist/*.apk; do
-            base=$(basename "$f"); url=""; diag=""
-            resp=$(curl -sS --max-time 240 -F "file=@${f}" https://pixeldrain.com/api/file 2>&1 || true)
-            url=$(printf '%s' "$resp" | grep -o '"id":"[A-Za-z0-9]*"' | head -n1 | cut -d'"' -f4 || true)
-            if [ -n "$url" ]; then url="https://pixeldrain.com/api/file/${url}?download=1"; diag="pixeldrain: OK";
-            else
-              diag="pixeldrain failed: $(printf '%s' "$resp" | head -c 120)"
-              url=$(curl -fsSL --max-time 240 -F "file=@${f}" https://0x0.st 2>/dev/null || true)
-            fi
-            if [ "${url#https://}" = "$url" ]; then
-              diag="${diag} | 0x0.st failed"
-              resp=$(curl -sS --max-time 240 -F "reqtype=fileupload" -F "fileToUpload=@${f}" https://catbox.moe/user/api.php 2>&1 || true)
-              url="$resp"; diag="${diag} | catbox: $(printf '%s' "$resp" | head -c 120)"
-            fi
-            if [ "${url#https://}" != "$url" ]; then
-              echo "- ${base} → ${url}" >> /tmp/mirror.md
-            else
-              echo "- ${base} → FAILED (${diag})" >> /tmp/mirror.md
-            fi
-          done
+          hub="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          rm -rf /tmp/pages
+          if ! git clone -q --depth=1 --branch gh-pages "$hub" /tmp/pages 2>/dev/null; then
+            git clone -q --depth=1 "$hub" /tmp/pages
+            git -C /tmp/pages checkout --orphan gh-pages
+            git -C /tmp/pages rm -rq . 2>/dev/null || true
+          fi
+          git -C /tmp/pages config user.name "github-actions[bot]"
+          git -C /tmp/pages config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p /tmp/pages/apk
+          cp dist/*.apk /tmp/pages/apk/
+          {
+            echo '<!doctype html><meta charset="utf-8"><title>Arena Trace builds</title>'
+            echo '<h1>Arena Trace 下载</h1><ul>'
+            for a in /tmp/pages/apk/*.apk; do
+              b=$(basename "$a")
+              echo "<li><a href=\"apk/$b\">$b</a></li>"
+            done
+            echo "</ul><p>最新版本：v${version}</p>"
+          } > /tmp/pages/index.html
+          git -C /tmp/pages add -A
+          if git -C /tmp/pages commit -q -m "APKs for ${tag}"; then
+            git -C /tmp/pages push -q origin gh-pages
+            gh api -X POST "repos/${{ github.repository }}/pages/builds" -f "ref=gh-pages" 2>/dev/null || true
+          fi
 
-          # Always write the mirror table (successes AND host error messages)
-          # into the release notes: the notes are the one place readable
-          # without log access.
+          page_base="https://ai-modelsapi.github.io/arena-trace-android"
+          {
+            echo "### 免登录直链（gh-pages，点开即下载）"
+            echo "- 正式签名版：${page_base}/apk/arena-trace-v${version}-release.apk"
+            echo "- 调试版：${page_base}/apk/arena-trace-v${version}-debug.apk"
+          } >> "$GITHUB_STEP_SUMMARY"
           gh release view "$tag" --json body --jq -r .body > /tmp/notes.md || true
           {
             echo
-            echo "### 免登录直链（镜像，点开即下载）"
-            cat /tmp/mirror.md
+            echo "### 免登录直链（点开即下载）"
+            echo "- 正式签名版：${page_base}/apk/arena-trace-v${version}-release.apk"
+            echo "- 调试版：${page_base}/apk/arena-trace-v${version}-debug.apk"
           } >> /tmp/notes.md
           gh release edit "$tag" --notes-file /tmp/notes.md
-          grep "→ http" /tmp/mirror.md >> "$GITHUB_STEP_SUMMARY" || true
 
       # Compiler errors, Gradle failure summaries and failed unit tests become
       # ::error annotations on the check run.
