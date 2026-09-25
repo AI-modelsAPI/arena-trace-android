@@ -132,11 +132,14 @@ jobs:
           fi
 
           hub="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
-          rm -rf /tmp/pages
-          if ! git clone -q --depth=1 --branch gh-pages "$hub" /tmp/pages 2>/dev/null; then
-            git clone -q --depth=1 "$hub" /tmp/pages
-            git -C /tmp/pages checkout --orphan gh-pages
-            git -C /tmp/pages rm -rq . 2>/dev/null || true
+          rm -rf /tmp/pages; mkdir -p /tmp/pages
+          git -C /tmp/pages init -q -b gh-pages
+          git -C /tmp/pages remote add origin "$hub"
+          # Keep every past APK on the site; only repo files themselves are pruned.
+          if git -C /tmp/pages fetch -q --depth=1 origin gh-pages; then
+            git -C /tmp/pages checkout -q FETCH_HEAD
+            stale=$(git -C /tmp/pages ls-files | grep -v -e '^apk/' -e '^index\.html$' || true)
+            if [ -n "$stale" ]; then printf '%s\n' "$stale" | xargs -d '\n' git -C /tmp/pages rm -q --; fi
           fi
           git -C /tmp/pages config user.name "github-actions[bot]"
           git -C /tmp/pages config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -146,12 +149,15 @@ jobs:
             echo '<!doctype html><meta charset="utf-8"><title>Arena Trace builds</title>'
             echo '<h1>Arena Trace 下载</h1><ul>'
             for a in /tmp/pages/apk/*.apk; do
+              [ -e "$a" ] || continue
               b=$(basename "$a")
               echo "<li><a href=\"apk/$b\">$b</a></li>"
             done
             echo "</ul><p>最新版本：v${version}</p>"
           } > /tmp/pages/index.html
-          git -C /tmp/pages add -A
+          # The repo .gitignore excludes *.apk — force-add the binaries.
+          git -C /tmp/pages add index.html
+          git -C /tmp/pages add -f apk
           if git -C /tmp/pages commit -q -m "APKs for ${tag}"; then
             git -C /tmp/pages push -q origin gh-pages
             gh api -X POST "repos/${{ github.repository }}/pages/builds" -f "ref=gh-pages" 2>/dev/null || true
