@@ -183,6 +183,21 @@ class TurnIntakeTest {
         SnoopEvent(session, "", page, activity = true)
 
     @Test
+    fun activityRevivesATurnThatHadNoModelsButNotAnExpiredOne() {
+        var clock = now
+        val i = TurnIntake(FakeHistory(), nowSeconds = { clock })
+        val a = i.onToken(event("run_a", "s1", page = "/agent/s1"), null, notInFlight) as Action.Fetch
+        // First fetch came back empty-handed (slow generation) → FAILED, no-model note.
+        i.onTraceResult("s1", a.turn.key, emptyList(), "trace 未返回模型名称")
+        assertTrue(i.onActivity(activityEvent("s1"), null, notInFlight) is Action.Query)
+        // Cooldown still applies between revivals.
+        assertTrue(i.onActivity(activityEvent("s1"), null, notInFlight) is Action.Known)
+        // Once the remembered token itself is past expiry, activity stays quiet.
+        clock += far + 10
+        assertTrue(i.onActivity(activityEvent("s1"), null, notInFlight) is Action.Known)
+    }
+
+    @Test
     fun activityRefetchesAResolvedTurnWithItsRememberedToken() {
         var clock = now
         val i = TurnIntake(FakeHistory(), nowSeconds = { clock })

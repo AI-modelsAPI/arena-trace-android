@@ -95,7 +95,10 @@ class TraceClient(private val client: OkHttpClient = defaultClient()) {
     private fun nowSeconds() = System.currentTimeMillis() / 1000
 
     companion object {
-        private const val MAX_ATTEMPTS = 8
+        // 40 × 3 s ≈ a two-minute window per fetch: slow generations only
+        // surface their model spans near the end. The loop still aborts the
+        // moment the token itself expires (hard boundary, checked above).
+        private const val MAX_ATTEMPTS = 40
         private const val POLL_INTERVAL_MS = 3_000L
         private const val MAX_BODY_BYTES = 4L * 1024 * 1024
 

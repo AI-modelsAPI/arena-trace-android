@@ -228,7 +228,14 @@ class TurnIntake(
         val turn = turns.turns(sessionId).maxByOrNull { it.number } ?: return Action.Known(
             sessionId, TurnTracker.Turn(0, "", Status.FAILED),
         )
-        if (turn.status != Status.RESOLVED) return Action.Known(sessionId, turn)
+        // Retry a resolving turn (its reply may still be growing) AND a turn
+        // whose first fetch found no model span: slow generations publish the
+        // spans only near the end. Pending turns have their own fetch running;
+        // other failure notes (e.g. token expired) can never improve on retry.
+        if (turn.status == Status.PENDING) return Action.Known(sessionId, turn)
+        if (turn.status == Status.FAILED && turn.note != TurnTracker.NOTE_NO_MODEL) {
+            return Action.Known(sessionId, turn)
+        }
         if (inFlight(turn.key)) return Action.Known(sessionId, turn)
         val memory = tokens[turn.key] ?: return Action.Known(sessionId, turn)
         val now = nowSeconds()
