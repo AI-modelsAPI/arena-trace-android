@@ -112,9 +112,10 @@ jobs:
             echo "- 调试版：[arena-trace-v${APK_VERSION}-debug.apk](${DEBUG_URL})"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Tag push → public GitHub Release. Release assets are plain, login-free
-      # direct downloads, unlike run artifacts (auth + signed CDN redirects).
-      - name: Publish APKs to a GitHub Release
+      # Tag push → GitHub Release plus anonymous-file-host mirrors. The repo is
+      # PRIVATE, so even release assets require a GitHub login; the mirrors give
+      # login-free https links that work inside the app's WebView.
+      - name: Publish APKs (release + mirrors)
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
@@ -126,6 +127,30 @@ jobs:
             gh release upload "$tag" dist/*.apk --clobber
           else
             gh release create "$tag" dist/*.apk --title "Arena Trace ${tag}" --generate-notes
+          fi
+
+          urls=""
+          for f in dist/*.apk; do
+            url=$(curl -fsSL --max-time 180 -F "reqtype=fileupload" -F "fileToUpload=@${f}"                     https://catbox.moe/user/api.php 2>/dev/null || true)
+            if [ "${url#https://}" = "$url" ]; then
+              url=$(curl -fsSL --max-time 180 -F "file=@${f}" https://0x0.st 2>/dev/null || true)
+            fi
+            if [ "${url#https://}" != "$url" ]; then
+              urls="${urls}${url}\n"
+            else
+              echo "::warning::could not mirror $f to an anonymous host"
+            fi
+          done
+
+          if [ -n "$urls" ]; then
+            gh release view "$tag" --json body --jq -r .body > /tmp/notes.md || true
+            {
+              echo
+              echo "### 免登录直链（镜像，点开即下载）"
+              printf "%b" "$urls"
+            } >> /tmp/notes.md
+            gh release edit "$tag" --notes-file /tmp/notes.md
+            printf "### 免登录直链\n%b" "$urls" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       # Compiler errors, Gradle failure summaries and failed unit tests become
