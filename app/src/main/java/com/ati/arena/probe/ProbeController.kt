@@ -313,6 +313,9 @@ class ProbeController(
                     // Zero recognizable rows — almost always a structural change
                     // on Arena's side; say so in plain words instead of grinding.
                     listener.onProgress("侧栏扫描完成：未识别到对话链接（0 项）；若侧栏非空，网页结构可能已更新")
+                } else {
+                    raw.optString("topSample").takeIf { it.isNotEmpty() }
+                        ?.let { listener.onProgress("顶部行样例：$it") }
                 }
 
                 // The open chat, when it is itself arithmetic residue: leave it
@@ -327,10 +330,9 @@ class ProbeController(
                     }
                 }
 
-                // Verification: a light rescan reports anything still left.
-                val remaining = runCatching { scanSidebar() }
-                    .getOrNull()
-                    ?.let { ProbeLogic.planCleanup(it.items, null).size } ?: -1
+                // Verification comes from the sweep's own full inventory — no
+                // second sidebar scan (that was the second silent spinner).
+                val remaining = raw.optJSONArray("leftovers")?.length() ?: -1
                 listener.onFinished(summary(archived, failures.keys.toList(), currentNote, remaining, incomplete))
             } catch (_: CancellationException) {
                 listener.onFinished("清理已停止（已归档 $archived）")

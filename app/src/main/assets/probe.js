@@ -495,14 +495,14 @@
     }
   }
   /**
-   * Position-agnostic cleanup: walk the virtualized sidebar top → bottom once
-   * and archive every bare-arithmetic row WHILE it is mounted — no remembered
-   * scroll offsets, no seek-back phase, and arithmetic residue anywhere in the
-   * list (first, middle or last) is handled the same way. Hard bounds make the
-   * panel impossible to spin: wall-clock budget, step budget, and a
-   * consecutive-failure abort with the page's own error text.
-   * Returns { archived:[{sessionId,title}], failed:[{sessionId,title,error}],
-   *           skippedCurrent:{sessionId,title}|null, scanned, incomplete, lastError }.
+   * Position-agnostic cleanup: walk the virtualized sidebar BOTH ways and
+   * archive every bare-arithmetic row WHILE it is mounted — down first, then
+   * back up for anything the downward pass could not finish. Arithmetic
+   * residue anywhere in the list (first, middle or last) is treated the same.
+   * Hard bounds make spinning impossible: wall-clock budget, step budget, a
+   * frozen-scroll quiet detector, and a consecutive-failure abort that keeps
+   * the page's own error text. The result carries everything the native side
+   * needs (leftovers included) so NO second verification scan is required.
    */
   async function cleanupSweep(args) {
     const opened = await ensureSidebarOpen();
@@ -512,40 +512,41 @@
     if (!api?.archive) throw Error('页面归档组件未就绪');
     const currentId = session();
     const budgetMs = Math.max(30_000, Math.min(10 * 60_000, Number(args?.budgetMs) || 6 * 60_000));
-    const maxSteps = Math.max(20, Math.min(1200, Number(args?.maxSteps) || 400));
+    const maxSteps = Math.max(20, Math.min(1500, Number(args?.maxSteps) || 500));
     const maxFailures = Math.max(1, Math.min(10, Number(args?.maxFailures) || 3));
     const started = Date.now();
-    const archived = [], failed = [], seenIds = new Set(), handled = new Set();
+    const archived = [];
+    const failedById = new Map();              // sessionId -> {sessionId,title,error}
+    const seen = new Map();                    // sessionId -> {sessionId,title,pos} every row ever mounted
+    const handled = new Set();                 // archived, failed or deliberately skipped
     let skippedCurrent = null, incomplete = false, lastError = '', consecutiveFails = 0;
+    let quiet = 0, lastHeight = -1, lastCount = -1, lastScrollTop = -1;
 
     const mounted = () => {
       const rows = [];
+      const pos = scroller ? Math.round(scroller.scrollTop) : 0;
       for (const a of sidebarLinks()) {
         if (!shown(a)) continue;
         const id = linkSession(a);
         const title = normTitle(text(a)).slice(0, 300);
-        seenIds.add(id);
+        if (!seen.has(id)) seen.set(id, { sessionId: id, title, pos });
         rows.push({ id, title, a });
       }
       return rows;
     };
-    const finish = () => ({
-      archived, failed, skippedCurrent,
-      scanned: seenIds.size, incomplete, lastError,
-    });
+    const firstSeenTitles = () => {
+      const list = [...seen.values()].sort((x, y) => x.pos - y.pos).slice(0, 10)
+        .map(i => (isArithmeticTitle(i.title) ? '算式「' + i.title + '」' : '「' + (i.title || i.sessionId).slice(0, 24) + '」'));
+      return list.join(' ');
+    };
 
-    const scroller = sidebarScroller();
-    if (scroller) { scroller.scrollTop = 0; await sleep(250); }
-    let quiet = 0, lastHeight = -1, lastCount = -1;
-
-    for (let step = 0; step < maxSteps; step++) {
-      if (Date.now() - started > budgetMs) { incomplete = true; lastError = lastError || '超过清理时限，提前收尾'; break; }
-
-      // Archive every arithmetic row that is mounted RIGHT NOW; re-query after
-      // each one because archived rows unmount and the list slides under us.
+    // Archive every arithmetic row that is mounted RIGHT NOW; re-query after
+    // each one because archived rows unmount and the list slides under us.
+    const archiveMounted = async () => {
       for (;;) {
+        if (Date.now() - started > budgetMs) { incomplete = true; lastError = lastError || '超过清理时限，提前收尾'; return false; }
         const row = mounted().find(r => isArithmeticTitle(r.title) && !handled.has(r.id));
-        if (!row) break;
+        if (!row) return true;
         if (row.id === currentId) {
           skippedCurrent = { sessionId: row.id, title: row.title };
           handled.add(row.id);
@@ -555,37 +556,75 @@
         try {
           await api.archive({ sessionId: row.id, isCurrent: () => session() !== row.id, requireCurrentUrl: false, manageSidebar: false });
           archived.push({ sessionId: row.id, title: row.title });
+          failedById.delete(row.id);
           consecutiveFails = 0;
           await sleep(400); // let the row unmount before re-collecting
         } catch (e) {
           consecutiveFails++;
           lastError = String(e?.message || e).slice(0, 160);
-          failed.push({ sessionId: row.id, title: row.title, error: lastError });
+          failedById.set(row.id, { sessionId: row.id, title: row.title, error: lastError });
           if (consecutiveFails >= maxFailures) {
             incomplete = true;
-            lastError += '（连续失败，已停止；修复后再点一次清理）';
-            return finish();
+            lastError += '（连续失败，已停止；请把这一行日志发来）';
+            return false;
           }
           await sleep(600);
         }
       }
+    };
 
-      // One viewport-step down, then stop when the list truly stops growing.
-      if (!scroller) break; // every row was mounted — the sweep is complete
+    const scroller = sidebarScroller();
+    if (scroller) { scroller.scrollTop = 0; await sleep(250); }
+    mounted(); // seed the "what is at the top?" sample before any scrolling
+
+    // ---- downward pass: top → bottom, archiving on sight ----
+    for (let step = 0; step < maxSteps; step++) {
+      if (Date.now() - started > budgetMs) { incomplete = true; lastError = lastError || '超过清理时限，提前收尾'; break; }
+      if (!(await archiveMounted())) return finish();
+      if (!scroller) break; // every row was mounted — sweep complete
       if (atBottom(scroller)) {
         const clicked = clickShowMore(scroller);
         await sleep(clicked ? 700 : 400);
-        const height = scroller.scrollHeight, count = seenIds.size;
-        if (height === lastHeight && count === lastCount && !scroller.querySelector(LOADING)) {
-          if (++quiet >= 3) break;
-        } else quiet = 0;
-        lastHeight = height; lastCount = count;
-        continue;
+      } else {
+        scroller.scrollTop = Math.min(scroller.scrollTop + Math.max(60, Math.floor(scroller.clientHeight * 0.75)), scroller.scrollHeight);
+        await sleep(160);
       }
-      scroller.scrollTop = Math.min(scroller.scrollTop + Math.max(60, Math.floor(scroller.clientHeight * 0.75)), scroller.scrollHeight);
-      await sleep(140);
+      // Quiet when the list stops growing OR the scroller stops moving: the
+      // bottom doesn't have to be reached to know there is nothing new.
+      const height = scroller.scrollHeight, count = seen.size, topPos = scroller.scrollTop;
+      const frozen = !atBottom(scroller) && topPos === lastScrollTop;
+      if ((height === lastHeight && count === lastCount) || frozen) {
+        if (!scroller.querySelector(LOADING)) { if (++quiet >= 3) break; }
+      } else quiet = 0;
+      lastHeight = height; lastCount = count; lastScrollTop = topPos;
     }
-    if (!incomplete && scroller && quiet < 3) incomplete = true;
+
+    // ---- upward pass: bottom → top for leftovers the first pass could not finish ----
+    if (scroller && failedById.size > 0 && !incomplete) {
+      for (const id of [...failedById.keys()]) handled.delete(id); // one more chance
+      consecutiveFails = 0;
+      scroller.scrollTop = scroller.scrollHeight; await sleep(200);
+      for (let step = 0; step < maxSteps; step++) {
+        if (Date.now() - started > budgetMs) { incomplete = true; lastError = lastError || '超过清理时限，提前收尾'; break; }
+        if (!(await archiveMounted())) return finish();
+        mounted(); // keep the seen-map complete while moving up
+        if (scroller.scrollTop <= 0) break;
+        scroller.scrollTop = Math.max(0, scroller.scrollTop - Math.max(60, Math.floor(scroller.clientHeight * 0.75)));
+        await sleep(160);
+      }
+    }
+
+    function finish() {
+      const failed = [...failedById.values()];
+      return {
+        archived, failed, skippedCurrent,
+        scanned: seen.size,
+        incomplete, lastError,
+        topSample: firstSeenTitles(),
+        leftovers: [...seen.values()].filter(i => isArithmeticTitle(i.title) && !archived.some(a => a.sessionId === i.sessionId) && i.sessionId !== (skippedCurrent?.sessionId || '') && !failedById.has(i.sessionId))
+          .map(i => ({ sessionId: i.sessionId, title: i.title })),
+      };
+    }
     return finish();
   }
 
