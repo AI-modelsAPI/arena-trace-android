@@ -15,7 +15,7 @@
  */
 (() => {
   // Re-injection guard: onPageFinished can fire more than once per document.
-  const VERSION = 6; // position-agnostic cleanup sweep: archive the moment a row mounts
+  const VERSION = 7; // cleanup verdicts decided by DOM truth: is the row still there?
   if ((globalThis.ArenaProbe?.version || 0) >= VERSION) return;
   const ARENA = 'https://arena.ai';
   const NEW_CHAT_LABELS = ['New Chat', 'New chat', '新建聊天', '新对话', '新建对话'];
@@ -511,6 +511,11 @@
     const api = globalThis.ArenaConversationRename;
     if (!api?.archive) throw Error('页面归档组件未就绪');
     const currentId = session();
+    // Promise.race guard: a page promise must never strand the sweep.
+    const withTimeout = (promise, ms) => new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(Error('归档确认超时')), ms);
+      promise.then(v => { clearTimeout(t); resolve(v); }, e => { clearTimeout(t); reject(e); });
+    });
     const budgetMs = Math.max(30_000, Math.min(10 * 60_000, Number(args?.budgetMs) || 6 * 60_000));
     const maxSteps = Math.max(20, Math.min(1500, Number(args?.maxSteps) || 500));
     const maxFailures = Math.max(1, Math.min(10, Number(args?.maxFailures) || 3));
@@ -554,12 +559,28 @@
         }
         handled.add(row.id);
         try {
-          await api.archive({ sessionId: row.id, isCurrent: () => session() !== row.id, requireCurrentUrl: false, manageSidebar: false });
+          // Bound EACH archive: whatever the page promise does, we re-check
+          // the DOM after at most 45 s — like a person would: click archive,
+          // blink, and if the row is gone, it's done.
+          await withTimeout(
+            api.archive({ sessionId: row.id, isCurrent: () => session() !== row.id, requireCurrentUrl: false, manageSidebar: false }),
+            45_000,
+          );
           archived.push({ sessionId: row.id, title: row.title });
           failedById.delete(row.id);
           consecutiveFails = 0;
           await sleep(400); // let the row unmount before re-collecting
         } catch (e) {
+          // Timeout or page-side complaint: the DOM is the verdict. If the
+          // row is gone from the sidebar, the archive actually worked.
+          await sleep(1200);
+          const stillThere = sidebarLinks().some(a => linkSession(a) === row.id);
+          if (!stillThere) {
+            archived.push({ sessionId: row.id, title: row.title });
+            failedById.delete(row.id);
+            consecutiveFails = 0;
+            continue;
+          }
           consecutiveFails++;
           lastError = String(e?.message || e).slice(0, 160);
           failedById.set(row.id, { sessionId: row.id, title: row.title, error: lastError });
@@ -593,8 +614,10 @@
       // bottom doesn't have to be reached to know there is nothing new.
       const height = scroller.scrollHeight, count = seen.size, topPos = scroller.scrollTop;
       const frozen = !atBottom(scroller) && topPos === lastScrollTop;
+      // Height/row-count/position unchanged = nothing is moving, even if some
+      // decorative spinner element pretends to be loading forever.
       if ((height === lastHeight && count === lastCount) || frozen) {
-        if (!scroller.querySelector(LOADING)) { if (++quiet >= 3) break; }
+        if (++quiet >= 3) break;
       } else quiet = 0;
       lastHeight = height; lastCount = count; lastScrollTop = topPos;
     }
